@@ -1,20 +1,46 @@
 {
   "name": "mysql-mcp-server",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "main": "build/index.js",
+  "bin": {
+    "mysql-mcp-server": "./build/index.js"
+  },
   "scripts": {
     "build": "npx tsc && chmod +x build/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "keywords": [
+    "mysql",
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "ai",
+    "database",
+    "sql"
+  ],
+  "author": "mysql-mcp-server contributors",
+  "license": "MIT",
+  "description": "MySQL MCP Server - MySQL MCP that supports web management and real-time database switching",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minivv/mysql-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/minivv/mysql-mcp-server/issues"
+  },
+  "homepage": "https://github.com/minivv/mysql-mcp-server#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.8.0",
     "@types/node": "^22.13.16",
+    "express": "^4.18.2",
     "mysql2": "^3.14.0",
     "typescript": "^5.8.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6"
   }
 }
