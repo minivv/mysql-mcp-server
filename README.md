@@ -21,6 +21,7 @@ Unlike other MySQL MCP servers, this project offers:
 - **Real-time Connection Switching** - Switch between databases instantly without restarting
 - **Smart Config Parsing** - Paste JDBC URL or Spring Boot config, auto-fill connection form
 - **Secure Password Storage** - AES-256-GCM encrypted passwords
+- **SQL Blacklist Protection** - Prevent dangerous SQL operations like DROP, TRUNCATE
 
 ### Screenshots
 
@@ -36,6 +37,7 @@ This project is inspired by and built upon [designcomputer/mysql_mcp_server](htt
 - **Full SQL Support**: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP
 - **Database Management**: List databases, tables, describe table structures
 - **Connection Management**: Save and switch between multiple database connections
+- **SQL Blacklist**: Block dangerous SQL operations with customizable rules
 - **Web UI**: Visual interface at `http://localhost:3456`
 - **Secure Storage**: Passwords encrypted with AES-256-GCM
 - **MCP Compatible**: Works with Claude Desktop and other MCP clients
@@ -130,6 +132,7 @@ The Web UI starts automatically with the MCP server at `http://localhost:3456`
 - Test connection before saving
 - One-click switch between connections
 - Smart config parsing (JDBC URL, Spring Boot YAML/Properties)
+- SQL Blacklist management with real-time testing
 
 **Disable auto-open browser:**
 ```bash
@@ -141,6 +144,31 @@ MCP_OPEN_BROWSER=false
 - Passwords are encrypted using AES-256-GCM
 - Encryption key stored in `~/.mysql-mcp/.key` (mode 0600)
 - Connection configs stored in `~/.mysql-mcp/connections.json`
+
+### SQL Blacklist
+
+The SQL Blacklist feature protects your database from dangerous operations. Manage it via Web UI or config file.
+
+**Default blocked patterns:**
+
+| Pattern | Description |
+|---------|-------------|
+| `DROP DATABASE` | Prevent database deletion |
+| `DROP TABLE` | Prevent table deletion |
+| `DROP INDEX` | Prevent index deletion |
+| `TRUNCATE` | Prevent table truncation |
+| `DELETE without WHERE` | Prevent full table deletion |
+| `UPDATE without WHERE` | Prevent full table update |
+| `ALTER TABLE DROP` | Prevent column deletion |
+| `GRANT / REVOKE` | Prevent permission changes |
+
+**Configuration file:** `~/.mysql-mcp/sql-blacklist.json`
+
+**Features:**
+- Enable/disable globally or per-rule
+- Add custom regex patterns
+- Test SQL statements in real-time
+- Reset to defaults anytime
 
 ### Contributing
 
@@ -165,6 +193,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 - **实时切换连接** - 无需重启即可在不同数据库间切换
 - **智能配置解析** - 粘贴 JDBC URL 或 Spring Boot 配置，自动填充表单
 - **安全密码存储** - 使用 AES-256-GCM 加密存储密码
+- **SQL 黑名单保护** - 防止 DROP、TRUNCATE 等危险 SQL 操作
 
 ### 截图
 
@@ -180,6 +209,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 - **完整 SQL 支持**: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP
 - **数据库管理**: 列出数据库、表，查看表结构
 - **连接管理**: 保存和切换多个数据库连接
+- **SQL 黑名单**: 可自定义规则拦截危险 SQL 操作
 - **Web 界面**: 可视化管理界面 `http://localhost:3456`
 - **安全存储**: 密码使用 AES-256-GCM 加密
 - **MCP 兼容**: 支持 Claude Desktop 和其他 MCP 客户端
@@ -274,6 +304,7 @@ Web 界面随 MCP 服务器自动启动，访问 `http://localhost:3456`
 - 测试连接可用性
 - 一键切换活动连接
 - 智能配置解析 (JDBC URL, Spring Boot YAML/Properties)
+- SQL 黑名单管理，支持实时测试
 
 **禁用自动打开浏览器：**
 ```bash
@@ -285,6 +316,31 @@ MCP_OPEN_BROWSER=false
 - 密码使用 AES-256-GCM 加密存储
 - 加密密钥保存在 `~/.mysql-mcp/.key` (权限 0600)
 - 连接配置保存在 `~/.mysql-mcp/connections.json`
+
+### SQL 黑名单
+
+SQL 黑名单功能可保护数据库免受危险操作。通过 Web 界面或配置文件管理。
+
+**默认拦截规则：**
+
+| 规则 | 描述 |
+|------|------|
+| `DROP DATABASE` | 禁止删除数据库 |
+| `DROP TABLE` | 禁止删除表 |
+| `DROP INDEX` | 禁止删除索引 |
+| `TRUNCATE` | 禁止清空表 |
+| `DELETE 无 WHERE` | 禁止无条件删除 |
+| `UPDATE 无 WHERE` | 禁止无条件更新 |
+| `ALTER TABLE DROP` | 禁止删除列 |
+| `GRANT / REVOKE` | 禁止权限变更 |
+
+**配置文件：** `~/.mysql-mcp/sql-blacklist.json`
+
+**功能特点：**
+- 支持全局或单条规则启用/禁用
+- 支持自定义正则表达式规则
+- 支持实时测试 SQL 语句
+- 支持一键恢复默认规则
 
 ### 贡献
 
