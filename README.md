@@ -53,18 +53,23 @@ npm run build
 
 ### Configuration
 
-#### Environment Variables
+The server no longer requires a default database connection in environment variables.
+Start the MCP server, open the Web UI, then add and activate your MySQL connection there.
+Connections are saved in `~/.mysql-mcp/connections.json`.
+
+#### Optional Environment Variables
 
 ```bash
+MCP_WEB_PORT=3456              # Web UI port (default: 3456)
+MCP_OPEN_BROWSER=false         # Disable auto-open browser (default: true)
+
+# Optional legacy default connection fallback.
+# If no Web UI connection is active, MYSQL_HOST and MYSQL_USER can still be used.
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=your_password
 MYSQL_DATABASE=your_database
-
-# Optional: Web UI settings
-MCP_WEB_PORT=3456              # Web UI port (default: 3456)
-MCP_OPEN_BROWSER=false         # Disable auto-open browser (default: true)
 ```
 
 #### Claude Desktop Configuration
@@ -79,11 +84,6 @@ MCP_OPEN_BROWSER=false         # Disable auto-open browser (default: true)
       "command": "node",
       "args": ["/path/to/mysql-mcp-server/build/index.js"],
       "env": {
-        "MYSQL_HOST": "localhost",
-        "MYSQL_PORT": "3306",
-        "MYSQL_USER": "root",
-        "MYSQL_PASSWORD": "your_password",
-        "MYSQL_DATABASE": "your_database",
         "MCP_OPEN_BROWSER": "false"
       }
     }
@@ -125,7 +125,8 @@ MCP_OPEN_BROWSER=false         # Disable auto-open browser (default: true)
 
 ### Web UI
 
-The Web UI starts automatically with the MCP server at `http://localhost:3456`
+The Web UI starts automatically with the MCP server at `http://localhost:3456`.
+On first launch, add a connection and click **Use** before running database tools.
 
 **Features:**
 - Add/Edit/Delete database connections
@@ -225,18 +226,23 @@ npm run build
 
 ### 配置
 
-#### 环境变量
+现在不再需要通过环境变量配置默认数据库连接。
+启动 MCP 服务器后，打开 Web 界面，在页面中添加并启用 MySQL 连接即可。
+连接配置会保存到 `~/.mysql-mcp/connections.json`。
+
+#### 可选环境变量
 
 ```bash
+MCP_WEB_PORT=3456              # Web 界面端口 (默认: 3456)
+MCP_OPEN_BROWSER=false         # 禁用自动打开浏览器 (默认: true)
+
+# 可选：兼容旧版默认连接配置。
+# 如果 Web 界面中没有启用连接，仍可通过 MYSQL_HOST 和 MYSQL_USER 提供默认连接。
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=your_password
 MYSQL_DATABASE=your_database
-
-# 可选：Web 界面设置
-MCP_WEB_PORT=3456              # Web 界面端口 (默认: 3456)
-MCP_OPEN_BROWSER=false         # 禁用自动打开浏览器 (默认: true)
 ```
 
 #### Claude Desktop 配置
@@ -251,11 +257,6 @@ MCP_OPEN_BROWSER=false         # 禁用自动打开浏览器 (默认: true)
       "command": "node",
       "args": ["/path/to/mysql-mcp-server/build/index.js"],
       "env": {
-        "MYSQL_HOST": "localhost",
-        "MYSQL_PORT": "3306",
-        "MYSQL_USER": "root",
-        "MYSQL_PASSWORD": "your_password",
-        "MYSQL_DATABASE": "your_database",
         "MCP_OPEN_BROWSER": "false"
       }
     }
@@ -297,7 +298,8 @@ MCP_OPEN_BROWSER=false         # 禁用自动打开浏览器 (默认: true)
 
 ### Web 管理界面
 
-Web 界面随 MCP 服务器自动启动，访问 `http://localhost:3456`
+Web 界面随 MCP 服务器自动启动，访问 `http://localhost:3456`。
+首次启动时，先添加连接并点击**使用**，再运行数据库工具。
 
 **功能：**
 - 添加/编辑/删除数据库连接

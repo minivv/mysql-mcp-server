@@ -178,21 +178,30 @@ function saveBlacklist(config: SqlBlacklistConfig): void {
   }
 }
 
+const NO_ACTIVE_CONNECTION_MESSAGE =
+  'No active MySQL connection. Open the Web UI, save a connection, and click Use before running database tools.';
+
 // Get current connection config
-function getCurrentConnection(): DbConnection {
+function getCurrentConnection(): DbConnection | null {
   const config = loadConfig();
   if (config.activeConnection) {
     const conn = config.connections.find(c => c.name === config.activeConnection);
     if (conn) return conn;
   }
-  // Return default from environment variables
+
+  const { MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE } = process.env;
+  if (!MYSQL_HOST || !MYSQL_USER) {
+    return null;
+  }
+
+  // Optional legacy fallback from environment variables.
   return {
     name: 'default',
-    host: process.env.MYSQL_HOST || 'localhost',
-    port: parseInt(process.env.MYSQL_PORT || '3306', 10),
-    user: process.env.MYSQL_USER || 'root',
-    password: process.env.MYSQL_PASSWORD || '',
-    database: process.env.MYSQL_DATABASE || '',
+    host: MYSQL_HOST,
+    port: parseInt(MYSQL_PORT || '3306', 10),
+    user: MYSQL_USER,
+    password: MYSQL_PASSWORD || '',
+    database: MYSQL_DATABASE || '',
   };
 }
 
@@ -272,6 +281,10 @@ class MySqlServer {
 
   private initializePool() {
     const conn = getCurrentConnection();
+    if (!conn) {
+      console.error('No active MySQL connection configured. Use the Web UI to add and activate one.');
+      return;
+    }
     this.currentDatabase = conn.database;
     this.pool = mysql.createPool({
       host: conn.host,
@@ -285,10 +298,23 @@ class MySqlServer {
     });
   }
 
-  private async recreatePool(config: DbConnection) {
+  private requirePool(): mysql.Pool {
+    if (!this.pool) {
+      throw new McpError(ErrorCode.InvalidRequest, NO_ACTIVE_CONNECTION_MESSAGE);
+    }
+    return this.pool;
+  }
+
+  private async closePool() {
     if (this.pool) {
       await this.pool.end();
+      this.pool = null;
     }
+    this.currentDatabase = '';
+  }
+
+  private async recreatePool(config: DbConnection) {
+    await this.closePool();
     this.currentDatabase = config.database;
     this.pool = mysql.createPool({
       host: config.host,
@@ -306,6 +332,11 @@ class MySqlServer {
   public async switchConnection(config: DbConnection) {
     await this.recreatePool(config);
     console.error(`[Web] Switched to connection: ${config.name}`);
+  }
+
+  public async clearConnection() {
+    await this.closePool();
+    console.error('[Web] Cleared active MySQL connection');
   }
 
   private setupToolHandlers() {
@@ -540,19 +571,19 @@ class MySqlServer {
         'Only SELECT, SHOW, DESCRIBE, EXPLAIN allowed');
     }
     console.error(`[${transactionId}] Executing: ${query}`);
-    const [rows] = await this.pool!.query(query);
+    const [rows] = await this.requirePool().query(query);
     return this.successResponse(rows);
   }
 
   private async handleListDatabases(transactionId: string) {
     console.error(`[${transactionId}] Listing databases`);
-    const [rows] = await this.pool!.query('SHOW DATABASES');
+    const [rows] = await this.requirePool().query('SHOW DATABASES');
     return this.successResponse(rows);
   }
 
   private async handleListTables(transactionId: string) {
     console.error(`[${transactionId}] Listing tables`);
-    const [rows] = await this.pool!.query('SHOW TABLES');
+    const [rows] = await this.requirePool().query('SHOW TABLES');
     return this.successResponse({
       database: this.currentDatabase,
       tables: rows,
@@ -565,7 +596,7 @@ class MySqlServer {
       throw new McpError(ErrorCode.InvalidParams, 'Table name required');
     }
     console.error(`[${transactionId}] Describing table: ${table}`);
-    const [rows] = await this.pool!.query(`DESCRIBE \`${table}\``);
+    const [rows] = await this.requirePool().query(`DESCRIBE \`${table}\``);
     return this.successResponse(rows);
   }
 
@@ -575,7 +606,7 @@ class MySqlServer {
       throw new McpError(ErrorCode.InvalidParams, 'Database name required');
     }
     console.error(`[${transactionId}] Switching to database: ${database}`);
-    await this.pool!.query(`USE \`${database}\``);
+    await this.requirePool().query(`USE \`${database}\``);
     this.currentDatabase = database;
     return this.successResponse({
       success: true,
@@ -586,7 +617,14 @@ class MySqlServer {
 
   private handleGetConnectionInfo() {
     const conn = getCurrentConnection();
+    if (!conn) {
+      return this.successResponse({
+        connected: false,
+        message: NO_ACTIVE_CONNECTION_MESSAGE,
+      });
+    }
     return this.successResponse({
+      connected: !!this.pool,
       name: conn.name,
       host: conn.host,
       port: conn.port,
@@ -657,7 +695,7 @@ class MySqlServer {
     });
   }
 
-  private handleDeleteConnection(args: unknown) {
+  private async handleDeleteConnection(args: unknown) {
     const { name } = args as { name: string };
     if (!name) {
       throw new McpError(ErrorCode.InvalidParams, 'Connection name required');
@@ -668,11 +706,15 @@ class MySqlServer {
       throw new McpError(ErrorCode.InvalidParams,
         `Connection '${name}' not found`);
     }
+    const wasActive = config.activeConnection === name;
     config.connections.splice(index, 1);
-    if (config.activeConnection === name) {
+    if (wasActive) {
       config.activeConnection = null;
     }
     saveConfig(config);
+    if (wasActive) {
+      await this.closePool();
+    }
     return this.successResponse({
       success: true,
       message: `Connection '${name}' deleted`,
@@ -689,7 +731,7 @@ class MySqlServer {
         'Only CREATE TABLE queries allowed');
     }
     console.error(`[${transactionId}] Creating table`);
-    const [result] = await this.pool!.query(query);
+    const [result] = await this.requirePool().query(query);
     return this.successResponse({ success: true, result });
   }
 
@@ -702,7 +744,7 @@ class MySqlServer {
       throw new McpError(ErrorCode.InvalidParams, 'Only INSERT queries allowed');
     }
     console.error(`[${transactionId}] Inserting data`);
-    const [result] = await this.pool!.query(query);
+    const [result] = await this.requirePool().query(query);
     return this.successResponse({ success: true, result });
   }
 
@@ -720,7 +762,7 @@ class MySqlServer {
       throw new McpError(ErrorCode.InvalidParams, `SQL blocked: ${blacklistCheck.reason}`);
     }
     console.error(`[${transactionId}] Updating data`);
-    const [result] = await this.pool!.query(query);
+    const [result] = await this.requirePool().query(query);
     return this.successResponse({ success: true, result });
   }
 
@@ -738,7 +780,7 @@ class MySqlServer {
       throw new McpError(ErrorCode.InvalidParams, `SQL blocked: ${blacklistCheck.reason}`);
     }
     console.error(`[${transactionId}] Deleting data`);
-    const [result] = await this.pool!.query(query);
+    const [result] = await this.requirePool().query(query);
     return this.successResponse({ success: true, result });
   }
 
@@ -753,7 +795,7 @@ class MySqlServer {
       throw new McpError(ErrorCode.InvalidParams, `SQL blocked: ${blacklistCheck.reason}`);
     }
     console.error(`[${transactionId}] Executing SQL`);
-    const [result] = await this.pool!.query(query);
+    const [result] = await this.requirePool().query(query);
     return this.successResponse({ success: true, result });
   }
 
@@ -816,14 +858,16 @@ function startWebServer(mcpServer: MySqlServer) {
     res.json({ success: true });
   });
 
-  app.delete('/api/connections/:name', (req, res) => {
+  app.delete('/api/connections/:name', async (req, res) => {
     const { name } = req.params;
     const config = loadConfig();
     const idx = config.connections.findIndex(c => c.name === name);
     if (idx < 0) return res.status(404).json({ error: 'Not found' });
+    const wasActive = config.activeConnection === name;
     config.connections.splice(idx, 1);
-    if (config.activeConnection === name) config.activeConnection = null;
+    if (wasActive) config.activeConnection = null;
     saveConfig(config);
+    if (wasActive) await mcpServer.clearConnection();
     res.json({ success: true });
   });
 
