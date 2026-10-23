@@ -36,7 +36,7 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
-.page { max-width: 900px; margin: 0 auto; padding: 40px 24px 64px; }
+.page { max-width: 1040px; margin: 0 auto; padding: 40px 24px 64px; }
 
 .header { text-align: center; margin-bottom: 28px; animation: fadeUp .4s cubic-bezier(.2,0,0,1); }
 .header h1 {
@@ -93,7 +93,12 @@ body {
 .card-head h2 { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
 .muted { color: var(--text-muted); font-size: 12px; }
 
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.conn-grid { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; align-items: start; }
+.conn-grid .card { margin-bottom: 0; }
+.conn-grid .card:last-child { display: flex; flex-direction: column; max-height: calc(100vh - 250px); }
+
+.form-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.field-row { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 10px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field.full { grid-column: 1 / -1; }
 .field label { font-size: 12px; color: var(--text-muted); }
@@ -143,19 +148,37 @@ body {
 .btn-sm { padding: 5px 11px; font-size: 12px; }
 .hidden { display: none !important; }
 
-.conn-list { display: flex; flex-direction: column; gap: 10px; }
+.conn-list {
+  display: flex; flex-direction: column; gap: 8px;
+  overflow-y: auto; padding-right: 6px; margin-right: -6px;
+  flex: 1; min-height: 0;
+}
+.conn-list::-webkit-scrollbar { width: 8px; }
+.conn-list::-webkit-scrollbar-track { background: transparent; }
+.conn-list::-webkit-scrollbar-thumb { background: #2b3247; border-radius: 100px; }
+.conn-list::-webkit-scrollbar-thumb:hover { background: #3a4360; }
 .conn-item {
-  padding: 14px 16px; background: var(--surface-2);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 11px 13px; background: var(--surface-2);
   border: 1px solid var(--border); border-radius: var(--radius-md);
   transition: border-color .18s, background .18s;
 }
 .conn-item:hover { border-color: var(--border-strong); }
 .conn-item.active { border-color: rgba(56,189,248,.35); background: rgba(56,189,248,.05); }
-.conn-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.conn-title { display: flex; align-items: center; gap: 8px; }
-.conn-name { font-size: 13px; font-weight: 600; }
-.conn-actions { display: flex; gap: 4px; }
-.conn-meta { margin-top: 6px; font-size: 12px; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.conn-item.editing { border-color: rgba(251,191,36,.45); background: rgba(251,191,36,.05); }
+.conn-info { flex: 1; min-width: 0; }
+.conn-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.conn-name {
+  font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;
+}
+.conn-item.active .conn-name { color: var(--accent); }
+.conn-actions { display: flex; gap: 3px; flex-shrink: 0; }
+.conn-meta {
+  margin-top: 3px; font-size: 11.5px; color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .badge {
   padding: 2px 8px; border-radius: 100px; font-size: 11px; font-weight: 500;
 }
@@ -210,8 +233,11 @@ body {
 
 @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
-@media (max-width: 640px) {
-  .form-grid, .perm-grid { grid-template-columns: 1fr; }
+@media (max-width: 860px) {
+  .conn-grid { grid-template-columns: 1fr; }
+  .conn-grid .card:last-child { max-height: none; }
+  .conn-list { overflow-y: visible; }
+  .perm-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -228,58 +254,62 @@ body {
   </nav>
 
   <section id="panel-connections" class="tab-panel active">
-    <div class="card">
-      <div class="card-head">
-        <h2 id="form-title">添加连接</h2>
-        <button id="btn-cancel" class="btn btn-ghost btn-sm hidden">取消编辑</button>
-      </div>
-      <form id="conn-form" autocomplete="off">
-        <div class="form-grid">
-          <div class="field">
-            <label for="f-name">连接名称</label>
-            <input id="f-name" name="name" placeholder="local-dev" required>
-          </div>
-          <div class="field">
-            <label>库环境标识</label>
-            <div class="env-choice">
-              <label class="env-option test"><input type="radio" name="env" value="test"><span>测试库</span></label>
-              <label class="env-option prod"><input type="radio" name="env" value="prod" checked><span>正式库</span></label>
+    <div class="conn-grid">
+      <div class="card">
+        <div class="card-head">
+          <h2 id="form-title">添加连接</h2>
+          <button id="btn-cancel" class="btn btn-ghost btn-sm hidden">取消编辑</button>
+        </div>
+        <form id="conn-form" autocomplete="off">
+          <div class="form-grid">
+            <div class="field">
+              <label for="f-name">连接名称</label>
+              <input id="f-name" name="name" placeholder="local-dev" required>
+            </div>
+            <div class="field">
+              <label>库环境标识</label>
+              <div class="env-choice">
+                <label class="env-option test"><input type="radio" name="env" value="test"><span>测试库</span></label>
+                <label class="env-option prod"><input type="radio" name="env" value="prod" checked><span>正式库</span></label>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="f-host">主机</label>
+                <input id="f-host" name="host" placeholder="127.0.0.1" required>
+              </div>
+              <div class="field">
+                <label for="f-port">端口</label>
+                <input id="f-port" name="port" type="number" placeholder="3306">
+              </div>
+            </div>
+            <div class="field">
+              <label for="f-user">用户名</label>
+              <input id="f-user" name="user" placeholder="root" required>
+            </div>
+            <div class="field">
+              <label for="f-password">密码</label>
+              <input id="f-password" name="password" type="password" placeholder="编辑时留空表示不修改">
+            </div>
+            <div class="field">
+              <label for="f-database">默认数据库（可选）</label>
+              <input id="f-database" name="database" placeholder="ruoyi-vue-pro">
             </div>
           </div>
-          <div class="field">
-            <label for="f-host">主机</label>
-            <input id="f-host" name="host" placeholder="127.0.0.1" required>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">保存连接</button>
+            <button type="button" id="btn-test" class="btn btn-ghost">测试连接</button>
           </div>
-          <div class="field">
-            <label for="f-port">端口</label>
-            <input id="f-port" name="port" type="number" placeholder="3306">
-          </div>
-          <div class="field">
-            <label for="f-user">用户名</label>
-            <input id="f-user" name="user" placeholder="root" required>
-          </div>
-          <div class="field">
-            <label for="f-password">密码</label>
-            <input id="f-password" name="password" type="password" placeholder="编辑时留空表示不修改">
-          </div>
-          <div class="field full">
-            <label for="f-database">默认数据库（可选）</label>
-            <input id="f-database" name="database" placeholder="ruoyi-vue-pro">
-          </div>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn btn-primary">保存连接</button>
-          <button type="button" id="btn-test" class="btn btn-ghost">测试连接</button>
-        </div>
-      </form>
-    </div>
-
-    <div class="card">
-      <div class="card-head">
-        <h2>已保存的连接</h2>
-        <span id="conn-count" class="muted"></span>
+        </form>
       </div>
-      <div id="conn-list" class="conn-list"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>已保存的连接</h2>
+          <span id="conn-count" class="muted"></span>
+        </div>
+        <div id="conn-list" class="conn-list"></div>
+      </div>
     </div>
   </section>
 
@@ -371,25 +401,25 @@ function renderConnections() {
   }
   list.innerHTML = state.connections.map(function (c) {
     var name = esc(c.name);
-    var activeClass = c.active ? ' active' : '';
+    var cls = (c.active ? ' active' : '') + (state.editing === c.name ? ' editing' : '');
     var envLabel = c.env === 'test' ? '测试库' : '正式库';
     var activeBadge = c.active ? '<span class="badge active-badge">使用中</span>' : '';
-    return '<div class="conn-item' + activeClass + '">' +
-      '<div class="conn-top">' +
+    return '<div class="conn-item' + cls + '">' +
+      '<div class="conn-info">' +
         '<div class="conn-title">' +
           '<span class="conn-name">' + name + '</span>' +
           '<span class="badge ' + c.env + '">' + envLabel + '</span>' +
           activeBadge +
         '</div>' +
-        '<div class="conn-actions">' +
-          '<button class="btn btn-sm btn-ghost" data-act="activate" data-name="' + name + '">使用</button>' +
-          '<button class="btn btn-sm btn-ghost" data-act="edit" data-name="' + name + '">编辑</button>' +
-          '<button class="btn btn-sm btn-ghost" data-act="test" data-name="' + name + '">测试</button>' +
-          '<button class="btn btn-sm btn-danger" data-act="delete" data-name="' + name + '">删除</button>' +
-        '</div>' +
+        '<div class="conn-meta">' + esc(c.user) + '@' + esc(c.host) + ':' + esc(c.port) +
+          (c.database ? ' / ' + esc(c.database) : '') + '</div>' +
       '</div>' +
-      '<div class="conn-meta">' + esc(c.user) + '@' + esc(c.host) + ':' + esc(c.port) +
-        (c.database ? ' / ' + esc(c.database) : '') + '</div>' +
+      '<div class="conn-actions">' +
+        '<button class="btn btn-sm btn-ghost" data-act="activate" data-name="' + name + '">使用</button>' +
+        '<button class="btn btn-sm btn-ghost" data-act="edit" data-name="' + name + '">编辑</button>' +
+        '<button class="btn btn-sm btn-ghost" data-act="test" data-name="' + name + '">测试</button>' +
+        '<button class="btn btn-sm btn-danger" data-act="delete" data-name="' + name + '">删除</button>' +
+      '</div>' +
     '</div>';
   }).join('');
 }
@@ -441,6 +471,7 @@ function fillForm(conn) {
   state.editing = conn ? conn.name : null;
   $('form-title').textContent = conn ? '编辑连接：' + conn.name : '添加连接';
   $('btn-cancel').classList.toggle('hidden', !conn);
+  renderConnections();
 }
 
 function readForm() {
@@ -548,6 +579,9 @@ function switchTab(tab) {
   }
   $('panel-connections').classList.toggle('active', tab === 'connections');
   $('panel-permissions').classList.toggle('active', tab === 'permissions');
+  if (window.history && window.history.replaceState) {
+    window.history.replaceState(null, '', '#' + tab);
+  }
 }
 
 document.querySelector('.tabs').addEventListener('click', function (event) {
@@ -562,6 +596,10 @@ $('conn-list').addEventListener('click', handleConnAction);
 
 fillForm(null);
 load();
+
+if (window.location.hash === '#permissions') {
+  switchTab('permissions');
+}
 </script>
 </body>
 </html>`;
