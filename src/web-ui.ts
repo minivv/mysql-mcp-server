@@ -195,6 +195,40 @@ body {
   background: rgba(56,189,248,.03);
 }
 .hint-sm { margin: 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; }
+.input-with-btn { display: flex; gap: 6px; }
+.input-with-btn input { flex: 1; min-width: 0; }
+
+.filter-tabs {
+  display: flex; gap: 3px; padding: 3px; margin-bottom: 10px;
+  background: var(--surface-2); border-radius: var(--radius-sm);
+}
+.filter-tab {
+  flex: 1; border: 0; background: transparent; color: var(--text-muted);
+  font: inherit; font-size: 12px; padding: 6px 0; border-radius: 6px;
+  cursor: pointer; transition: background .15s, color .15s;
+}
+.filter-tab:hover { color: var(--text); }
+.filter-tab.active { background: var(--surface-3); color: var(--text); }
+
+.modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-box {
+  width: min(520px, 90vw); max-height: 70vh; display: flex; flex-direction: column;
+  background: var(--surface-1); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-md); overflow: hidden;
+}
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.modal-title { flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list { overflow-y: auto; padding: 6px; }
+.file-item {
+  padding: 7px 10px; border-radius: 6px; font-size: 12.5px; cursor: pointer;
+  display: flex; align-items: center; gap: 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.file-item:hover { background: var(--surface-2); }
+.file-item.is-dir { color: var(--accent); }
 
 .hint {
   font-size: 12.5px; color: var(--text-muted); line-height: 1.7;
@@ -312,7 +346,7 @@ body {
             <div id="ssh-fields" class="ssh-fields hidden">
               <div class="field">
                 <label for="f-ssh-host">SSH 主机</label>
-                <input id="f-ssh-host" placeholder="ssh66（也可填 user@host）">
+                <input id="f-ssh-host" placeholder="ssh66 或 user@host">
               </div>
               <div class="field-row">
                 <div class="field">
@@ -321,10 +355,20 @@ body {
                 </div>
                 <div class="field">
                   <label for="f-ssh-user">SSH 用户</label>
-                  <input id="f-ssh-user" placeholder="留空用 ssh 配置">
+                  <input id="f-ssh-user" placeholder="root">
                 </div>
               </div>
-              <p class="hint-sm">上面的「主机 / 端口」表示<strong>从跳板机看到的 MySQL 地址</strong>，例如 192.168.14.66:3306。隧道由 MCP 自动拉起，需要该 ssh 支持免密登录。</p>
+              <div class="field">
+                <label for="f-ssh-key">密钥文件</label>
+                <div class="input-with-btn">
+                  <input id="f-ssh-key" placeholder="~/.ssh/id_ed25519">
+                  <button type="button" class="btn btn-sm btn-ghost" id="btn-ssh-key">选择</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="f-ssh-passphrase">密钥口令</label>
+                <input id="f-ssh-passphrase" type="password" placeholder="无口令留空">
+              </div>
             </div>
           </div>
           <div class="form-actions">
@@ -339,6 +383,11 @@ body {
           <h2>已保存的连接</h2>
           <span id="conn-count" class="muted"></span>
         </div>
+        <div class="filter-tabs" id="conn-filter">
+          <button type="button" class="filter-tab active" data-filter="all">全部</button>
+          <button type="button" class="filter-tab" data-filter="test">测试库</button>
+          <button type="button" class="filter-tab" data-filter="prod">正式库</button>
+        </div>
         <div id="conn-list" class="conn-list"></div>
       </div>
     </div>
@@ -346,8 +395,8 @@ body {
 
   <section id="panel-permissions" class="tab-panel">
     <p class="hint">
-      权限开关绑定在<strong>库环境标识</strong>上，改一次即对所有使用该标识的连接生效。<br>
-      <strong>SELECT / SHOW / DESCRIBE / EXPLAIN 等只读查询始终允许</strong>，不受下面开关影响。
+      开关绑定在<strong>库环境标识</strong>上，改一次即对所有使用该标识的连接生效。
+      只读查询（SELECT / SHOW / DESCRIBE / EXPLAIN）始终放行。
     </p>
     <div id="perm-grid" class="perm-grid"></div>
     <div class="form-actions">
@@ -357,10 +406,21 @@ body {
 </div>
 <div id="toast" class="toast"></div>
 
+<div id="file-modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="file-dir" class="modal-title"></span>
+      <button type="button" class="btn btn-sm btn-ghost" id="btn-file-close">关闭</button>
+    </div>
+    <div id="file-list" class="file-list"></div>
+  </div>
+</div>
+
 <script>
-var state = { connections: [], activeConnection: null, permissions: { test: {}, prod: {} }, editing: null };
+var state = { connections: [], activeConnection: null, permissions: { test: {}, prod: {} }, editing: null, filter: 'all' };
 var OPS = [
-  { key: 'ddl', label: 'DDL', desc: 'CREATE / ALTER / DROP / TRUNCATE' },
+  { key: 'basicDdl', label: '基础 DDL', desc: '建表 / 加字段 / 加索引 / 重命名' },
+  { key: 'advancedDdl', label: '高级 DDL', desc: '删表 / 清空 / 删字段' },
   { key: 'insert', label: 'INSERT', desc: '新增数据' },
   { key: 'update', label: 'UPDATE', desc: '修改数据' },
   { key: 'delete', label: 'DELETE', desc: '删除数据' }
@@ -417,7 +477,7 @@ function renderStatus() {
     return;
   }
   var tpl = state.permissions[active.env] || {};
-  var writable = !!(tpl.ddl || tpl.insert || tpl.update || tpl.delete);
+  var writable = !!(tpl.basicDdl || tpl.advancedDdl || tpl.insert || tpl.update || tpl.delete);
   pill.className = 'status-pill connected ' + active.env;
   $('status-text').textContent =
     (active.env === 'test' ? '测试库' : '正式库') + ' · ' + (writable ? '可写' : '只读') + ' · ' + active.name;
@@ -425,12 +485,17 @@ function renderStatus() {
 
 function renderConnections() {
   var list = $('conn-list');
-  $('conn-count').textContent = state.connections.length ? state.connections.length + ' 个' : '';
-  if (!state.connections.length) {
-    list.innerHTML = '<div class="empty">还没有连接，先在上面添加一个。</div>';
+  var all = state.connections;
+  var visible = state.filter === 'all' ? all : all.filter(function (c) { return c.env === state.filter; });
+  $('conn-count').textContent = visible.length
+    ? visible.length + (visible.length !== all.length ? ' / ' + all.length : '') + ' 个'
+    : '';
+  if (!visible.length) {
+    list.innerHTML = '<div class="empty">' +
+      (all.length ? '没有符合条件的连接。' : '还没有连接，先在上面添加一个。') + '</div>';
     return;
   }
-  list.innerHTML = state.connections.map(function (c) {
+  list.innerHTML = visible.map(function (c) {
     var name = esc(c.name);
     var cls = (c.active ? ' active' : '') + (state.editing === c.name ? ' editing' : '');
     var envLabel = c.env === 'test' ? '测试库' : '正式库';
@@ -503,6 +568,9 @@ function fillForm(conn) {
   $('f-ssh-host').value = ssh ? ssh.host : '';
   $('f-ssh-port').value = ssh && ssh.port ? ssh.port : '';
   $('f-ssh-user').value = ssh && ssh.user ? ssh.user : '';
+  $('f-ssh-key').value = ssh && ssh.keyFile ? ssh.keyFile : '';
+  $('f-ssh-passphrase').value = '';
+  $('f-ssh-passphrase').placeholder = ssh && ssh.hasPassphrase ? '已设置，留空则不修改' : '无口令留空';
   toggleSshFields();
   setEnvRadio(conn ? conn.env : 'prod');
   state.editing = conn ? conn.name : null;
@@ -536,9 +604,44 @@ function sshPayload() {
   if (!host) return null;
   var ssh = { host: host };
   if ($('f-ssh-port').value) ssh.port = Number($('f-ssh-port').value);
-  var user = $('f-ssh-user').value.trim();
-  if (user) ssh.user = user;
+  if ($('f-ssh-user').value.trim()) ssh.user = $('f-ssh-user').value.trim();
+  if ($('f-ssh-key').value.trim()) ssh.keyFile = $('f-ssh-key').value.trim();
+  if ($('f-ssh-passphrase').value) ssh.passphrase = $('f-ssh-passphrase').value;
   return ssh;
+}
+
+function setFilter(filter) {
+  state.filter = filter;
+  var tabs = document.querySelectorAll('.filter-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].classList.toggle('active', tabs[i].getAttribute('data-filter') === filter);
+  }
+  renderConnections();
+}
+
+function loadFileDir(dir) {
+  api('/api/files' + (dir ? '?dir=' + encodeURIComponent(dir) : '')).then(function (res) {
+    if (!res || res.error) {
+      toast((res && res.error) || '无法读取目录', false);
+      return;
+    }
+    $('file-dir').textContent = res.dir;
+    var html = '';
+    if (res.parent) {
+      html += '<div class="file-item is-dir" data-dir="' + esc(res.parent) + '">⬆ 上一级</div>';
+    }
+    html += res.entries.map(function (e) {
+      return '<div class="file-item' + (e.dir ? ' is-dir' : '') + '" data-' +
+        (e.dir ? 'dir' : 'file') + '="' + esc(e.path) + '">' +
+        (e.dir ? '📁 ' : '📄 ') + esc(e.name) + '</div>';
+    }).join('');
+    $('file-list').innerHTML = html || '<div class="empty">空目录</div>';
+  });
+}
+
+function openFilePicker() {
+  $('file-modal').classList.remove('hidden');
+  loadFileDir($('f-ssh-key').value.trim());
 }
 
 function saveConnection(event) {
@@ -641,6 +744,26 @@ document.querySelector('.tabs').addEventListener('click', function (event) {
 });
 $('conn-form').addEventListener('submit', saveConnection);
 $('f-ssh-enabled').addEventListener('change', toggleSshFields);
+$('btn-ssh-key').addEventListener('click', openFilePicker);
+$('btn-file-close').addEventListener('click', function () { $('file-modal').classList.add('hidden'); });
+$('file-modal').addEventListener('click', function (event) {
+  if (event.target === $('file-modal')) $('file-modal').classList.add('hidden');
+});
+$('file-list').addEventListener('click', function (event) {
+  var item = event.target.closest('.file-item');
+  if (!item) return;
+  var dir = item.getAttribute('data-dir');
+  if (dir) {
+    loadFileDir(dir);
+    return;
+  }
+  $('f-ssh-key').value = item.getAttribute('data-file');
+  $('file-modal').classList.add('hidden');
+});
+$('conn-filter').addEventListener('click', function (event) {
+  var tab = event.target.closest('.filter-tab');
+  if (tab) setFilter(tab.getAttribute('data-filter'));
+});
 $('btn-test').addEventListener('click', testConnection);
 $('btn-cancel').addEventListener('click', function () { fillForm(null); });
 $('btn-save-perms').addEventListener('click', savePermissions);

@@ -74,7 +74,7 @@ function decryptPassword(encryptedData: string): string {
 type DbEnv = 'test' | 'prod';
 
 // 受权限控制的写操作类型。SELECT 等只读查询始终放开，不受开关限制。
-type Operation = 'ddl' | 'insert' | 'update' | 'delete';
+type Operation = 'basicDdl' | 'advancedDdl' | 'insert' | 'update' | 'delete';
 
 type PermissionTemplate = Record<Operation, boolean>;
 
@@ -83,8 +83,10 @@ interface SshTunnelConfig {
   host: string;          // ssh 目标，可用 ~/.ssh/config 里的别名（如 ssh66）
   port?: number;         // ssh 端口，省略则用 ssh 默认/配置
   user?: string;         // ssh 用户
-  remoteHost?: string;   // 从 ssh 主机看到的 MySQL 地址，默认 127.0.0.1
-  remotePort?: number;   // 从 ssh 主机看到的 MySQL 端口，默认 3306
+  keyFile?: string;      // 私钥文件路径
+  passphrase?: string;   // 私钥口令（存盘时加密）
+  remoteHost?: string;   // 从 ssh 主机看到的 MySQL 地址，默认用连接里的 host
+  remotePort?: number;   // 从 ssh 主机看到的 MySQL 端口，默认用连接里的 port
 }
 
 interface DbConnection {
@@ -107,14 +109,15 @@ interface ConnectionsConfig {
 type PermissionsConfig = Record<DbEnv, PermissionTemplate>;
 
 const DEFAULT_PERMISSIONS: PermissionsConfig = {
-  test: { ddl: true, insert: true, update: true, delete: true },
-  prod: { ddl: false, insert: false, update: false, delete: false },
+  test: { basicDdl: true, advancedDdl: true, insert: true, update: true, delete: true },
+  prod: { basicDdl: false, advancedDdl: false, insert: false, update: false, delete: false },
 };
 
 const ENV_LABEL: Record<DbEnv, string> = { test: '测试库', prod: '正式库' };
 
 const OPERATION_LABEL: Record<Operation, string> = {
-  ddl: 'DDL（CREATE / ALTER / DROP / TRUNCATE / RENAME）',
+  basicDdl: '基础 DDL（CREATE / ALTER 加字段索引 / RENAME）',
+  advancedDdl: '高级 DDL（DROP / TRUNCATE / ALTER DROP）',
   insert: 'INSERT',
   update: 'UPDATE',
   delete: 'DELETE',
@@ -166,6 +169,21 @@ function saveConfig(config: ConnectionsConfig): void {
 }
 
 // 读取权限模板配置
+// 旧配置里的 ddl 开关同时控制基础 / 高级 DDL，做一次兼容迁移
+function normalizeTemplate(raw: unknown, defaults: PermissionTemplate): PermissionTemplate {
+  const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const legacyDdl = typeof src.ddl === 'boolean' ? (src.ddl as boolean) : undefined;
+  const pick = (key: Operation, fallback: boolean): boolean =>
+    typeof src[key] === 'boolean' ? (src[key] as boolean) : fallback;
+  return {
+    basicDdl: pick('basicDdl', legacyDdl ?? defaults.basicDdl),
+    advancedDdl: pick('advancedDdl', legacyDdl ?? defaults.advancedDdl),
+    insert: pick('insert', defaults.insert),
+    update: pick('update', defaults.update),
+    delete: pick('delete', defaults.delete),
+  };
+}
+
 function loadPermissions(): PermissionsConfig {
   try {
     if (!fs.existsSync(CONFIG_DIR)) {
@@ -174,8 +192,8 @@ function loadPermissions(): PermissionsConfig {
     if (fs.existsSync(PERMISSIONS_FILE)) {
       const data = JSON.parse(fs.readFileSync(PERMISSIONS_FILE, 'utf-8')) as Partial<PermissionsConfig>;
       return {
-        test: { ...DEFAULT_PERMISSIONS.test, ...(data.test || {}) },
-        prod: { ...DEFAULT_PERMISSIONS.prod, ...(data.prod || {}) },
+        test: normalizeTemplate(data.test, DEFAULT_PERMISSIONS.test),
+        prod: normalizeTemplate(data.prod, DEFAULT_PERMISSIONS.prod),
       };
     }
   } catch (error) {
@@ -288,8 +306,17 @@ function classifyStatement(query: string): StatementKind {
     return { read: false, op: 'delete', keyword };
   }
 
-  // CREATE / ALTER / DROP / TRUNCATE / RENAME 及一切未识别语句统一按 DDL 处理（最严格）
-  return { read: false, op: 'ddl', keyword: keyword || '(empty)' };
+  if (keyword === 'create') {
+    return { read: false, op: 'basicDdl', keyword };
+  }
+  if (keyword === 'alter' || keyword === 'rename') {
+    // ALTER TABLE ... DROP COLUMN 这类夹在 ALTER 里的破坏性操作按高级 DDL 处理
+    const op: Operation = /\bdrop\b/i.test(stripped) ? 'advancedDdl' : 'basicDdl';
+    return { read: false, op, keyword };
+  }
+
+  // DROP / TRUNCATE 以及一切未识别语句按高级 DDL 处理（最严格）
+  return { read: false, op: 'advancedDdl', keyword: keyword || '(empty)' };
 }
 
 // 查询结果行数上限，避免大表查询撑爆上下文
@@ -343,21 +370,41 @@ const normalizeSsh = (ssh: any): SshTunnelConfig | null => {
     host: String(ssh.host).trim(),
     ...(Number.isFinite(port) && port > 0 ? { port } : {}),
     ...(ssh.user ? { user: String(ssh.user).trim() } : {}),
+    ...(ssh.keyFile ? { keyFile: String(ssh.keyFile).trim() } : {}),
+    ...(ssh.passphrase ? { passphrase: String(ssh.passphrase) } : {}),
     ...(ssh.remoteHost ? { remoteHost: String(ssh.remoteHost).trim() } : {}),
     ...(Number.isFinite(remotePort) && remotePort > 0 ? { remotePort } : {}),
   };
 };
 
+const expandHome = (target: string): string =>
+  target.startsWith('~/') ? path.join(os.homedir(), target.slice(2)) : target;
+
+// 私钥有口令时，用 SSH_ASKPASS 把口令喂给 ssh（-o BatchMode=yes 会禁用这条路径）
+const writeAskpassScript = (passphrase: string): string => {
+  const file = path.join(os.tmpdir(), `mysql-mcp-askpass-${randomUUID()}.sh`);
+  const escaped = passphrase.replace(/'/g, `'\\''`);
+  fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${escaped}'\n`, { mode: 0o700 });
+  return file;
+};
+
 const buildSshArgs = (ssh: SshTunnelConfig, localPort: number, remoteHost: string, remotePort: number): string[] => {
-  const args = [
-    '-N',
-    '-o', 'BatchMode=yes',
+  const hasPassphrase = !!ssh.passphrase;
+  const args = ['-N'];
+  // 有口令时不能开 BatchMode，否则 ssh 根本不会去问 ASKPASS
+  if (!hasPassphrase) args.push('-o', 'BatchMode=yes');
+  args.push(
     '-o', 'ExitOnForwardFailure=yes',
     '-o', 'ServerAliveInterval=30',
     '-o', 'ServerAliveCountMax=3',
+    '-o', 'StrictHostKeyChecking=accept-new',
     // 只绑回环，不对外暴露隧道端口
     '-L', `127.0.0.1:${localPort}:${remoteHost}:${remotePort}`,
-  ];
+  );
+  if (hasPassphrase) {
+    args.push('-o', 'PreferredAuthentications=publickey', '-o', 'NumberOfPasswordPrompts=1');
+  }
+  if (ssh.keyFile) args.push('-i', expandHome(ssh.keyFile), '-o', 'IdentitiesOnly=yes');
   if (ssh.port) args.push('-p', String(ssh.port));
   if (ssh.user) args.push('-l', ssh.user);
   args.push(ssh.host);
@@ -412,7 +459,25 @@ const ensureTunnel = async (conn: DbConnection): Promise<{ host: string; port: n
   }
 
   const localPort = await findFreeLocalPort();
-  const proc = spawn('ssh', buildSshArgs(ssh, localPort, remoteHost, remotePort), { stdio: ['ignore', 'ignore', 'pipe'] });
+  const passphrase = ssh.passphrase ? decryptPassword(ssh.passphrase) : '';
+  const spawnOptions: { stdio: ['ignore', 'ignore', 'pipe']; env?: NodeJS.ProcessEnv } = { stdio: ['ignore', 'ignore', 'pipe'] };
+  let askpassFile: string | null = null;
+  if (passphrase) {
+    askpassFile = writeAskpassScript(passphrase);
+    spawnOptions.env = {
+      ...process.env,
+      SSH_ASKPASS: askpassFile,
+      SSH_ASKPASS_REQUIRE: 'force',
+      DISPLAY: process.env.DISPLAY || ':0',
+    };
+  }
+  const proc = spawn('ssh', buildSshArgs(ssh, localPort, remoteHost, remotePort), spawnOptions);
+  if (askpassFile) {
+    // ssh 认证一发生就会读完，留一点余量后删掉，避免口令长期躺在磁盘上
+    setTimeout(() => {
+      try { fs.unlinkSync(askpassFile as string); } catch { /* ignore */ }
+    }, 15000);
+  }
   proc.stderr?.on('data', (chunk: Buffer) => {
     const text = String(chunk).trim();
     if (text) console.error(`[SSH:${conn.name}] ${text}`);
@@ -899,7 +964,14 @@ function startWebServer(mcpServer: MySqlServer) {
       user: c.user,
       database: c.database,
       env: c.env,
-      ssh: c.ssh || null,
+      ssh: c.ssh
+        ? {
+            ...c.ssh,
+            // 口令不对外回显，前端只需要知道“已设置”
+            passphrase: undefined,
+            hasPassphrase: !!c.ssh.passphrase,
+          }
+        : null,
       active: c.name === config.activeConnection,
     }));
     res.json({ connections, activeConnection: config.activeConnection });
@@ -927,7 +999,16 @@ function startWebServer(mcpServer: MySqlServer) {
       password: password ? String(password) : (existing?.password || ''),
       database: database || '',
       env: normalizeEnv(env),
-      ssh: normalizeSsh(ssh),
+      ssh: (() => {
+        const normalized = normalizeSsh(ssh);
+        if (!normalized) return normalized;
+        const input = typeof ssh.passphrase === 'string' ? ssh.passphrase.trim() : '';
+        // 口令留空则沿用已保存的；否则加密后落盘
+        const passphrase = input
+          ? encryptPassword(input)
+          : (existing?.ssh?.passphrase || undefined);
+        return { ...normalized, ...(passphrase ? { passphrase } : {}) };
+      })(),
     };
     if (idx >= 0) config.connections[idx] = conn;
     else config.connections.push(conn);
@@ -978,13 +1059,26 @@ function startWebServer(mcpServer: MySqlServer) {
   app.post('/api/connections/test', async (req, res) => {
     const { host, port, user, password, database, name, originalName, ssh } = req.body || {};
     let resolvedPassword = password;
-    // 编辑已有连接时前端不回显密码，此时用已保存的密码测试
-    if ((!resolvedPassword || resolvedPassword === '') && (originalName || name)) {
-      const saved = loadConfig().connections.find(c => c.name === (originalName || name));
-      resolvedPassword = saved?.password;
+    // 编辑已有连接时前端不回显密码 / 口令，此时用已保存的
+    const saved = (originalName || name)
+      ? loadConfig().connections.find(c => c.name === (originalName || name))
+      : undefined;
+    if ((!resolvedPassword || resolvedPassword === '') && saved) {
+      resolvedPassword = saved.password;
     }
     // 保存的密码是密文，测试前先解密
     resolvedPassword = resolvedPassword ? decryptPassword(resolvedPassword) : '';
+
+    const normalizedSsh = normalizeSsh(ssh);
+    const inputPassphrase = typeof ssh?.passphrase === 'string' ? ssh.passphrase.trim() : '';
+    const testSsh = normalizedSsh
+      ? {
+          ...normalizedSsh,
+          ...(inputPassphrase
+            ? { passphrase: inputPassphrase }
+            : (saved?.ssh?.passphrase ? { passphrase: saved.ssh.passphrase } : {})),
+        }
+      : null;
 
     // 有 SSH 配置时先拉起临时隧道，测完即拆
     const testKey = `__test__${randomUUID()}`;
@@ -997,7 +1091,7 @@ function startWebServer(mcpServer: MySqlServer) {
         password: resolvedPassword,
         database: database || '',
         env: 'test',
-        ssh: normalizeSsh(ssh),
+        ssh: testSsh,
       });
       const conn = await mysql.createConnection({
         host: target.host, port: target.port, user, password: resolvedPassword, database,
@@ -1012,6 +1106,37 @@ function startWebServer(mcpServer: MySqlServer) {
     }
   });
 
+  // 给「选择私钥文件」用的极简目录浏览，范围限制在用户主目录内
+  app.get('/api/files', (req, res) => {
+    const home = os.homedir();
+    const requested =
+      typeof req.query.dir === 'string' && req.query.dir
+        ? expandHome(req.query.dir)
+        : path.join(home, '.ssh');
+    const dir = path.resolve(requested);
+    if (dir !== home && !dir.startsWith(home + path.sep)) {
+      return res.status(400).json({ error: '只能浏览用户主目录下的文件' });
+    }
+    // 传进来的是文件（如已填好的私钥路径）时，退到它所在目录
+    let listDir = dir;
+    try {
+      if (fs.statSync(dir).isFile()) listDir = path.dirname(dir);
+    } catch { /* 路径不存在就按目录处理 */ }
+    try {
+      const entries = fs
+        .readdirSync(listDir, { withFileTypes: true })
+        .map(entry => ({
+          name: entry.name,
+          path: path.join(listDir, entry.name),
+          dir: entry.isDirectory(),
+        }))
+        .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+      res.json({ dir: listDir, parent: listDir === home ? null : path.dirname(listDir), home, entries });
+    } catch (e) {
+      res.status(400).json({ error: describeError(e) });
+    }
+  });
+
   // 权限模板：按环境标识（test / prod）配置
   app.get('/api/permissions', (_req, res) => {
     res.json(loadPermissions());
@@ -1020,7 +1145,8 @@ function startWebServer(mcpServer: MySqlServer) {
   app.put('/api/permissions', (req, res) => {
     const body = req.body || {};
     const pick = (template: any): PermissionTemplate => ({
-      ddl: !!template?.ddl,
+      basicDdl: !!template?.basicDdl,
+      advancedDdl: !!template?.advancedDdl,
       insert: !!template?.insert,
       update: !!template?.update,
       delete: !!template?.delete,
