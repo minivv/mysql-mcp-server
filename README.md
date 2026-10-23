@@ -21,7 +21,7 @@ Unlike other MySQL MCP servers, this project offers:
 - **Real-time Connection Switching** - Switch between databases instantly without restarting
 - **Smart Config Parsing** - Paste JDBC URL or Spring Boot config, auto-fill connection form
 - **Secure Password Storage** - AES-256-GCM encrypted passwords
-- **SQL Blacklist Protection** - Prevent dangerous SQL operations like DROP, TRUNCATE
+- **Environment-aware Permissions** - Tag each connection as test/prod; prod is read-only by default
 
 ### Screenshots
 
@@ -34,10 +34,8 @@ This project is inspired by and built upon [designcomputer/mysql_mcp_server](htt
 
 ### Features
 
-- **Full SQL Support**: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP
-- **Database Management**: List databases, tables, describe table structures
-- **Connection Management**: Save and switch between multiple database connections
-- **SQL Blacklist**: Block dangerous SQL operations with customizable rules
+- **4 Focused Tools**: `run_sql_query`, `execute_sql`, `inspect`, `switch_database`
+- **Environment Permissions**: per-connection `test` / `prod` tag, write operations gated by a shared template per tag (`prod` defaults to read-only)
 - **Web UI**: Visual interface at `http://localhost:3456`
 - **Secure Storage**: Passwords encrypted with AES-256-GCM
 - **MCP Compatible**: Works with Claude Desktop and other MCP clients
@@ -70,6 +68,8 @@ MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=your_password
 MYSQL_DATABASE=your_database
+MYSQL_ENV=prod                 # test | prod, default: prod
+MCP_WEB_UI=false               # Disable the Web UI server entirely
 ```
 
 #### Claude Desktop Configuration
@@ -93,47 +93,23 @@ MYSQL_DATABASE=your_database
 
 ### Available Tools
 
-#### Query Tools
-
 | Tool | Description |
 |------|-------------|
-| `run_sql_query` | Execute read-only queries (SELECT, SHOW, DESCRIBE, EXPLAIN) |
-| `list_databases` | List all available databases |
-| `list_tables` | List all tables in current database |
-| `describe_table` | Show table structure |
+| `run_sql_query` | Read-only SQL (SELECT / SHOW / DESCRIBE / EXPLAIN / read-only WITH). Always allowed. Supports `max_rows` (default 500, max 10000). |
+| `execute_sql` | Any SQL statement. Whether it runs depends on the write permissions of the current connection's environment tag. |
+| `inspect` | No args: database list + tables of the current database. With `database`: tables of that database. With `table`: table structure. |
+| `switch_database` | Switch the current database. |
 
-#### Data Manipulation Tools
-
-| Tool | Description |
-|------|-------------|
-| `create_table` | Create a new table |
-| `insert_data` | Insert data into a table |
-| `update_data` | Update existing data |
-| `delete_data` | Delete data from a table |
-| `execute_sql` | Execute any SQL statement (ALTER, DROP, etc.) |
-
-#### Connection Management Tools
-
-| Tool | Description |
-|------|-------------|
-| `switch_database` | Switch to a different database |
-| `get_connection_info` | Get current connection information |
-| `list_saved_connections` | List all saved connections |
-| `save_connection` | Save a new connection |
-| `use_connection` | Switch to a saved connection |
-| `delete_connection` | Delete a saved connection |
+Connection management (add / edit / delete / activate / permission templates) lives in the Web UI, not in MCP tools — that keeps the tool surface small and keeps passwords out of the conversation.
 
 ### Web UI
 
 The Web UI starts automatically with the MCP server at `http://localhost:3456`.
-On first launch, add a connection and click **Use** before running database tools.
+On first launch, add a connection, tag it as test or prod, and click **Use** before running database tools.
 
-**Features:**
-- Add/Edit/Delete database connections
-- Test connection before saving
-- One-click switch between connections
-- Smart config parsing (JDBC URL, Spring Boot YAML/Properties)
-- SQL Blacklist management with real-time testing
+**Tabs:**
+- **Connections** — add/edit/delete connections, test connectivity, one-click switch, env tag per connection
+- **Permissions** — four switches (DDL / INSERT / UPDATE / DELETE) per env tag (`test`, `prod`)
 
 **Disable auto-open browser:**
 ```bash
@@ -145,31 +121,30 @@ MCP_OPEN_BROWSER=false
 - Passwords are encrypted using AES-256-GCM
 - Encryption key stored in `~/.mysql-mcp/.key` (mode 0600)
 - Connection configs stored in `~/.mysql-mcp/connections.json`
+- Dangerous-statement interception is a **guardrail, not a security boundary** — use a least-privilege MySQL account as the real boundary.
 
-### SQL Blacklist
+### Environment Permissions
 
-The SQL Blacklist feature protects your database from dangerous operations. Manage it via Web UI or config file.
+Every connection carries an environment tag: `test` or `prod`. Permissions are bound to the **tag**, not the connection: change a template once and every connection with that tag follows immediately.
 
-**Default blocked patterns:**
+| Operation | Statements | Default `test` | Default `prod` |
+|-----------|------------|:--------------:|:--------------:|
+| DDL | CREATE / ALTER / DROP / TRUNCATE / RENAME | ✅ | ❌ |
+| INSERT | INSERT / REPLACE | ✅ | ❌ |
+| UPDATE | UPDATE | ✅ | ❌ |
+| DELETE | DELETE | ✅ | ❌ |
+| Read | SELECT / SHOW / DESCRIBE / EXPLAIN / read-only WITH | ✅ | ✅ |
 
-| Pattern | Description |
-|---------|-------------|
-| `DROP DATABASE` | Prevent database deletion |
-| `DROP TABLE` | Prevent table deletion |
-| `DROP INDEX` | Prevent index deletion |
-| `TRUNCATE` | Prevent table truncation |
-| `DELETE without WHERE` | Prevent full table deletion |
-| `UPDATE without WHERE` | Prevent full table update |
-| `ALTER TABLE DROP` | Prevent column deletion |
-| `GRANT / REVOKE` | Prevent permission changes |
+Read-only statements are never gated. Anything that cannot be classified is treated as DDL and blocked on `prod`. Statements are normalised first (leading `--` / `/* */` / `#` comments are stripped, `WITH … DELETE` is detected as a write), so `/* x */ DELETE …` does not slip through.
 
-**Configuration file:** `~/.mysql-mcp/sql-blacklist.json`
+**Configuration file:** `~/.mysql-mcp/permissions.json` (managed by the Web UI).
 
-**Features:**
-- Enable/disable globally or per-rule
-- Add custom regex patterns
-- Test SQL statements in real-time
-- Reset to defaults anytime
+```json
+{
+  "test": { "ddl": true,  "insert": true,  "update": true,  "delete": true },
+  "prod": { "ddl": false, "insert": false, "update": false, "delete": false }
+}
+```
 
 ### Contributing
 
@@ -194,7 +169,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 - **实时切换连接** - 无需重启即可在不同数据库间切换
 - **智能配置解析** - 粘贴 JDBC URL 或 Spring Boot 配置，自动填充表单
 - **安全密码存储** - 使用 AES-256-GCM 加密存储密码
-- **SQL 黑名单保护** - 防止 DROP、TRUNCATE 等危险 SQL 操作
+- **库环境权限** - 每个连接标记测试库/正式库，正式库默认只读
 
 ### 截图
 
@@ -207,10 +182,8 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ### 功能特性
 
-- **完整 SQL 支持**: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP
-- **数据库管理**: 列出数据库、表，查看表结构
-- **连接管理**: 保存和切换多个数据库连接
-- **SQL 黑名单**: 可自定义规则拦截危险 SQL 操作
+- **4 个精简工具**: `run_sql_query`、`execute_sql`、`inspect`、`switch_database`
+- **库环境权限**: 每个连接带 `test` / `prod` 标识，写操作按标识套用共享权限模板（正式库默认只读）
 - **Web 界面**: 可视化管理界面 `http://localhost:3456`
 - **安全存储**: 密码使用 AES-256-GCM 加密
 - **MCP 兼容**: 支持 Claude Desktop 和其他 MCP 客户端
@@ -243,6 +216,8 @@ MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=your_password
 MYSQL_DATABASE=your_database
+MYSQL_ENV=prod                 # test | prod，默认 prod
+MCP_WEB_UI=false               # 完全关闭 Web 服务
 ```
 
 #### Claude Desktop 配置
@@ -266,47 +241,23 @@ MYSQL_DATABASE=your_database
 
 ### 可用工具
 
-#### 查询工具
-
 | 工具 | 描述 |
 |------|------|
-| `run_sql_query` | 执行只读查询 (SELECT, SHOW, DESCRIBE, EXPLAIN) |
-| `list_databases` | 列出所有数据库 |
-| `list_tables` | 列出当前数据库的所有表 |
-| `describe_table` | 查看表结构 |
+| `run_sql_query` | 只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / 只读 WITH），永不受权限拦截。支持 `max_rows`（默认 500，上限 10000）。 |
+| `execute_sql` | 执行任意 SQL，是否放行取决于当前连接所属库环境标识的写权限模板。 |
+| `inspect` | 无参数：库列表 + 当前库的表；传 `database`：该库的表；传 `table`：表结构。 |
+| `switch_database` | 切换当前数据库。 |
 
-#### 数据操作工具
-
-| 工具 | 描述 |
-|------|------|
-| `create_table` | 创建新表 |
-| `insert_data` | 插入数据 |
-| `update_data` | 更新数据 |
-| `delete_data` | 删除数据 |
-| `execute_sql` | 执行任意 SQL (ALTER, DROP 等) |
-
-#### 连接管理工具
-
-| 工具 | 描述 |
-|------|------|
-| `switch_database` | 切换数据库 |
-| `get_connection_info` | 获取当前连接信息 |
-| `list_saved_connections` | 列出已保存的连接 |
-| `save_connection` | 保存新连接 |
-| `use_connection` | 切换到已保存的连接 |
-| `delete_connection` | 删除已保存的连接 |
+连接管理（新增/编辑/删除/启用/权限模板）全部在 Web 界面完成，不占用 MCP 工具位，也避免密码穿进对话。
 
 ### Web 管理界面
 
 Web 界面随 MCP 服务器自动启动，访问 `http://localhost:3456`。
-首次启动时，先添加连接并点击**使用**，再运行数据库工具。
+首次启动时，先添加连接、选择测试库/正式库标识，点击**使用**后再运行数据库工具。
 
-**功能：**
-- 添加/编辑/删除数据库连接
-- 测试连接可用性
-- 一键切换活动连接
-- 智能配置解析 (JDBC URL, Spring Boot YAML/Properties)
-- SQL 黑名单管理，支持实时测试
+**两个标签页：**
+- **连接管理** — 新增/编辑/删除连接、测试连通性、一键切换、设置库环境标识
+- **权限配置** — 按标识（测试库 / 正式库）分别控制 DDL / INSERT / UPDATE / DELETE 四个开关
 
 **禁用自动打开浏览器：**
 ```bash
@@ -318,31 +269,30 @@ MCP_OPEN_BROWSER=false
 - 密码使用 AES-256-GCM 加密存储
 - 加密密钥保存在 `~/.mysql-mcp/.key` (权限 0600)
 - 连接配置保存在 `~/.mysql-mcp/connections.json`
+- 语句拦截是**保险丝，不是安全边界**；真正的边界是最小权限的 MySQL 账号。
 
-### SQL 黑名单
+### 库环境权限
 
-SQL 黑名单功能可保护数据库免受危险操作。通过 Web 界面或配置文件管理。
+每个连接带一个环境标识：`test` 或 `prod`。权限绑在**标识**上而不是单个连接上：改一次模板，所有使用该标识的连接立即生效。
 
-**默认拦截规则：**
+| 操作 | 对应语句 | 测试库默认 | 正式库默认 |
+|------|----------|:----------:|:----------:|
+| DDL | CREATE / ALTER / DROP / TRUNCATE / RENAME | ✅ | ❌ |
+| INSERT | INSERT / REPLACE | ✅ | ❌ |
+| UPDATE | UPDATE | ✅ | ❌ |
+| DELETE | DELETE | ✅ | ❌ |
+| 只读 | SELECT / SHOW / DESCRIBE / EXPLAIN / 只读 WITH | ✅ | ✅ |
 
-| 规则 | 描述 |
-|------|------|
-| `DROP DATABASE` | 禁止删除数据库 |
-| `DROP TABLE` | 禁止删除表 |
-| `DROP INDEX` | 禁止删除索引 |
-| `TRUNCATE` | 禁止清空表 |
-| `DELETE 无 WHERE` | 禁止无条件删除 |
-| `UPDATE 无 WHERE` | 禁止无条件更新 |
-| `ALTER TABLE DROP` | 禁止删除列 |
-| `GRANT / REVOKE` | 禁止权限变更 |
+只读语句永不受限。无法识别的语句一律按 DDL 处理，在正式库上被拦截。判断前会先做归一化（剔除开头 `--`、`/* */`、`#` 注释，识别 `WITH … DELETE` 这类型写语句），所以 `/* x */ DELETE …` 无法绕过。
 
-**配置文件：** `~/.mysql-mcp/sql-blacklist.json`
+**配置文件：** `~/.mysql-mcp/permissions.json`（由 Web 界面维护）。
 
-**功能特点：**
-- 支持全局或单条规则启用/禁用
-- 支持自定义正则表达式规则
-- 支持实时测试 SQL 语句
-- 支持一键恢复默认规则
+```json
+{
+  "test": { "ddl": true,  "insert": true,  "update": true,  "delete": true },
+  "prod": { "ddl": false, "insert": false, "update": false, "delete": false }
+}
+```
 
 ### 贡献
 
