@@ -114,12 +114,27 @@ The Web UI starts automatically with the MCP server at `http://localhost:3456`.
 On first launch, add a connection, tag it as test or prod, and click **Use** before running database tools.
 
 **Tabs:**
-- **Connections** — add/edit/delete connections, test connectivity, one-click switch, env tag per connection
+- **Connections** — add/edit/delete connections, test connectivity, one-click switch, env tag per connection, optional SSH tunnel
 - **Permissions** — four switches (DDL / INSERT / UPDATE / DELETE) per env tag (`test`, `prod`)
 
 **Disable auto-open browser:**
 ```bash
 MCP_OPEN_BROWSER=false
+```
+
+### SSH Tunnels
+
+If MySQL is only reachable from a jump host (private network / VPN-only), enable **SSH tunnel** on that connection. The server spawns `ssh -N -L` itself and reuses the tunnel for the lifetime of the connection pool.
+
+- **SSH host** — an alias from `~/.ssh/config` (e.g. `ssh66`), or an explicit `host` / `user` pair
+- The connection's **host / port** then mean *"where MySQL listens as seen from the jump host"* (usually `127.0.0.1:3306`)
+- Key-based auth only (`BatchMode=yes`) — interactive password prompts are not supported, configure passwordless key auth first
+- The local forwarding port is chosen automatically (starting from `13306`)
+- Tunnels are torn down on connection switch / delete and on `SIGINT` / `SIGTERM`
+
+```bash
+# Pre-check: key auth must work without prompting
+ssh -o BatchMode=yes <ssh-alias> echo OK
 ```
 
 ### Security
@@ -268,12 +283,27 @@ Web 界面随 MCP 服务器自动启动，访问 `http://localhost:3456`。
 首次启动时，先添加连接、选择测试库/正式库标识，点击**使用**后再运行数据库工具。
 
 **两个标签页：**
-- **连接管理** — 新增/编辑/删除连接、测试连通性、一键切换、设置库环境标识
+- **连接管理** — 新增/编辑/删除连接、测试连通性、一键切换、设置库环境标识、可选 SSH 隧道
 - **权限配置** — 按标识（测试库 / 正式库）分别控制 DDL / INSERT / UPDATE / DELETE 四个开关
 
 **禁用自动打开浏览器：**
 ```bash
 MCP_OPEN_BROWSER=false
+```
+
+### SSH 隧道
+
+如果 MySQL 只能从跳板机访问（内网 / 仅 VPN 可达），在该连接上开启 **SSH 隧道**。服务器会自己拉起 `ssh -N -L`，并在连接池生命周期内复用该隧道。
+
+- **SSH 主机** — `~/.ssh/config` 里的别名（如 `ssh66`），或直接填 `host` / `user`
+- 连接里的 **主机 / 端口** 此时表示「从跳板机看到的 MySQL 地址」（通常 `127.0.0.1:3306`）
+- 仅支持密钥认证（`BatchMode=yes`），不支持交互式输入密码，请先配好免密登录
+- 本地转发端口自动选择（从 `13306` 起）
+- 切换连接、删除连接、收到 `SIGINT` / `SIGTERM` 时自动关闭隧道
+
+```bash
+# 前置检查：密钥认证必须免密可用
+ssh -o BatchMode=yes <ssh别名> echo OK
 ```
 
 ### 安全性

@@ -8,6 +8,8 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { randomUUID, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+import { spawn } from 'child_process';
+import * as net from 'net';
 import mysql from 'mysql2/promise';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -76,6 +78,15 @@ type Operation = 'ddl' | 'insert' | 'update' | 'delete';
 
 type PermissionTemplate = Record<Operation, boolean>;
 
+// 需要 SSH 隧道才能进来的库（例如只在内网可达、或本机进程被拦在内网之外）
+interface SshTunnelConfig {
+  host: string;          // ssh 目标，可用 ~/.ssh/config 里的别名（如 ssh66）
+  port?: number;         // ssh 端口，省略则用 ssh 默认/配置
+  user?: string;         // ssh 用户
+  remoteHost?: string;   // 从 ssh 主机看到的 MySQL 地址，默认 127.0.0.1
+  remotePort?: number;   // 从 ssh 主机看到的 MySQL 端口，默认 3306
+}
+
 interface DbConnection {
   name: string;
   host: string;
@@ -84,6 +95,7 @@ interface DbConnection {
   password: string;
   database: string;
   env: DbEnv;
+  ssh?: SshTunnelConfig | null;
 }
 
 interface ConnectionsConfig {
@@ -124,6 +136,7 @@ function loadConfig(): ConnectionsConfig {
         password: decryptPassword(conn.password),
         // 历史配置没有 env 字段时按正式库处理，宁可保守
         env: normalizeEnv(conn.env),
+        ssh: normalizeSsh(conn.ssh),
       }));
       return config;
     }
@@ -311,10 +324,138 @@ const describeError = (error: unknown): string => {
   return String(error || 'Tool execution failed');
 };
 
+// ---------------------------------------------------------------------------
+// SSH 隧道：部分内网库只能从跳板机访问（或被本机安全策略拦在内网之外），
+// 这时由 MCP 自己拉起一条 ssh -L，MySQL 连 127.0.0.1 即可。
+// ---------------------------------------------------------------------------
+interface ActiveTunnel {
+  proc: any;
+  localPort: number;
+}
+
+const tunnels = new Map<string, ActiveTunnel>();
+
+const normalizeSsh = (ssh: any): SshTunnelConfig | null => {
+  if (!ssh || typeof ssh !== 'object' || !ssh.host) return null;
+  const remotePort = Number(ssh.remotePort);
+  const port = Number(ssh.port);
+  return {
+    host: String(ssh.host).trim(),
+    ...(Number.isFinite(port) && port > 0 ? { port } : {}),
+    ...(ssh.user ? { user: String(ssh.user).trim() } : {}),
+    ...(ssh.remoteHost ? { remoteHost: String(ssh.remoteHost).trim() } : {}),
+    ...(Number.isFinite(remotePort) && remotePort > 0 ? { remotePort } : {}),
+  };
+};
+
+const buildSshArgs = (ssh: SshTunnelConfig, localPort: number, remoteHost: string, remotePort: number): string[] => {
+  const args = [
+    '-N',
+    '-o', 'BatchMode=yes',
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=3',
+    // 只绑回环，不对外暴露隧道端口
+    '-L', `127.0.0.1:${localPort}:${remoteHost}:${remotePort}`,
+  ];
+  if (ssh.port) args.push('-p', String(ssh.port));
+  if (ssh.user) args.push('-l', ssh.user);
+  args.push(ssh.host);
+  return args;
+};
+
+const findFreeLocalPort = async (start = 13306): Promise<number> => {
+  const taken = new Set([...tunnels.values()].map(t => t.localPort));
+  for (let port = start; port < start + 100; port++) {
+    if (taken.has(port)) continue;
+    const free = await new Promise<boolean>((resolve) => {
+      const probe = net.createServer();
+      probe.once('error', () => resolve(false));
+      probe.once('listening', () => probe.close(() => resolve(true)));
+      probe.listen(port, '127.0.0.1');
+    });
+    if (free) return port;
+  }
+  throw new Error('无法为 SSH 隧道分配本地端口');
+};
+
+const waitForPort = (port: number, timeoutMs = 8000): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const attempt = () => {
+      const socket = net.createConnection({ host: '127.0.0.1', port });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve();
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        if (Date.now() > deadline) reject(new Error(`SSH 隧道端口 ${port} 未就绪`));
+        else setTimeout(attempt, 200);
+      });
+    };
+    attempt();
+  });
+
+// 返回 MySQL 实际应该连的 host / port（无 ssh 配置则原样返回）
+const ensureTunnel = async (conn: DbConnection): Promise<{ host: string; port: number }> => {
+  const ssh = normalizeSsh(conn.ssh);
+  if (!ssh) return { host: conn.host, port: conn.port };
+
+  // 远端地址默认就用连接里填的 host / port：跳板机通常能看到同一个内网库
+  const remoteHost = ssh.remoteHost || conn.host;
+  const remotePort = ssh.remotePort || conn.port;
+
+  const running = tunnels.get(conn.name);
+  if (running && running.proc.exitCode === null) {
+    return { host: '127.0.0.1', port: running.localPort };
+  }
+
+  const localPort = await findFreeLocalPort();
+  const proc = spawn('ssh', buildSshArgs(ssh, localPort, remoteHost, remotePort), { stdio: ['ignore', 'ignore', 'pipe'] });
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    const text = String(chunk).trim();
+    if (text) console.error(`[SSH:${conn.name}] ${text}`);
+  });
+  proc.on('exit', (code: number | null) => {
+    console.error(`[SSH:${conn.name}] tunnel exited (code=${code})`);
+    tunnels.delete(conn.name);
+  });
+
+  tunnels.set(conn.name, { proc, localPort });
+  try {
+    await waitForPort(localPort);
+  } catch (error) {
+    killTunnel(conn.name);
+    throw error;
+  }
+
+  console.error(`[SSH:${conn.name}] 127.0.0.1:${localPort} → ${ssh.host} → ${remoteHost}:${remotePort}`);
+  return { host: '127.0.0.1', port: localPort };
+};
+
+const killTunnel = (name: string): void => {
+  const tunnel = tunnels.get(name);
+  if (!tunnel) return;
+  try { tunnel.proc.kill(); } catch { /* ignore */ }
+  tunnels.delete(name);
+};
+
+const closeTunnels = (): void => {
+  for (const [name, tunnel] of tunnels) {
+    try { tunnel.proc.kill(); } catch { /* ignore */ }
+    console.error(`[SSH:${name}] tunnel closed`);
+  }
+  tunnels.clear();
+};
+
 class MySqlServer {
   private server: Server;
   private pool: mysql.Pool | null = null;
   private currentDatabase: string = '';
+  // 当前连接池对应的配置签名，用来发现配置文件变更
+  private poolSignature: string = '';
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     this.server = new Server(
@@ -322,27 +463,35 @@ class MySqlServer {
       { capabilities: { tools: {} } }
     );
 
-    this.initializePool();
+    // 建池可能要先拉起 SSH 隧道，所以是异步的，run() 里等它
+    this.initPromise = this.initializePool().catch((error) => {
+      console.error(`[init] ${describeError(error)}`);
+    });
     this.setupToolHandlers();
 
     this.server.onerror = (error) => console.error('[MCP Error]', error);
-    process.on('SIGINT', async () => {
+    const shutdown = async () => {
+      closeTunnels();
       if (this.pool) await this.pool.end();
       await this.server.close();
       process.exit(0);
-    });
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    process.on('exit', closeTunnels);
   }
 
-  private initializePool() {
+  private async initializePool() {
     const conn = getCurrentConnection();
     if (!conn) {
       console.error('No active MySQL connection configured. Use the Web UI to add and activate one.');
       return;
     }
     this.currentDatabase = conn.database;
+    const { host, port } = await this.resolveTarget(conn);
     this.pool = mysql.createPool({
-      host: conn.host,
-      port: conn.port,
+      host,
+      port,
       user: conn.user,
       password: conn.password,
       database: conn.database,
@@ -354,6 +503,49 @@ class MySqlServer {
       // 日期按字符串返回，避免时区转换带来的意外
       dateStrings: true,
     });
+    this.poolSignature = this.connectionSignature(conn);
+  }
+
+  // 连接配置的特征串：名称 / 地址 / 账号 / 库 / 标识 / SSH 任一变化都要重建连接池
+  private connectionSignature(conn: DbConnection): string {
+    return JSON.stringify([
+      conn.name,
+      conn.host,
+      conn.port,
+      conn.user,
+      conn.password,
+      conn.database,
+      conn.env,
+      conn.ssh || null,
+    ]);
+  }
+
+  // 配置可能被 Web UI 改过（该 Web UI 甚至可能属于另一个进程），每次工具调用前先对齐
+  private async ensureActiveConnection(): Promise<void> {
+    const conn = getCurrentConnection();
+    if (!conn) {
+      if (this.pool) {
+        await this.closePool().catch(() => undefined);
+      }
+      return;
+    }
+    if (this.pool && this.connectionSignature(conn) === this.poolSignature) {
+      return;
+    }
+    console.error(`[conn] 激活连接变更，重建连接池：${conn.name}（env=${conn.env}, db=${conn.database}）`);
+    await this.recreatePool(conn);
+  }
+  private async resolveTarget(conn: DbConnection): Promise<{ host: string; port: number }> {
+    try {
+      return await ensureTunnel(conn);
+    } catch (error) {
+      console.error(`[SSH:${conn.name}] 隧道建立失败：${describeError(error)}`);
+      throw new McpError(
+        ErrorCode.InternalError,
+        `连接「${conn.name}」的 SSH 隧道建立失败：${describeError(error)}。` +
+        `请检查 ssh 是否免密可用（ssh ${normalizeSsh(conn.ssh)?.host || ''}）。`
+      );
+    }
   }
 
   private requirePool(): mysql.Pool {
@@ -369,14 +561,16 @@ class MySqlServer {
       this.pool = null;
     }
     this.currentDatabase = '';
+    this.poolSignature = '';
   }
 
   private async recreatePool(config: DbConnection) {
     await this.closePool();
     this.currentDatabase = config.database;
+    const { host, port } = await this.resolveTarget(config);
     this.pool = mysql.createPool({
-      host: config.host,
-      port: config.port,
+      host,
+      port,
       user: config.user,
       password: config.password,
       database: config.database,
@@ -388,9 +582,8 @@ class MySqlServer {
       // 日期按字符串返回，避免时区转换带来的意外
       dateStrings: true,
     });
+    this.poolSignature = this.connectionSignature(config);
   }
-
-  // 公开方法供 Web 服务器调用
   public async switchConnection(config: DbConnection) {
     await this.recreatePool(config);
     console.error(`[Web] Switched to connection: ${config.name}`);
@@ -470,6 +663,8 @@ class MySqlServer {
     const { name, arguments: args } = request.params;
 
     try {
+      // 允许配置在别处（另一个进程的 Web UI / 手改 json）被更新，这里自动跟随
+      await this.ensureActiveConnection();
       switch (name) {
         case 'run_sql_query':
           return await this.handleReadQuery(args, transactionId);
@@ -656,6 +851,11 @@ class MySqlServer {
 
 
   async run() {
+    // 等连接（含 SSH 隧道）就绪，避免客户端一开始就拿到「无活动连接」
+    if (this.initPromise) {
+      try { await this.initPromise; } catch { /* 错误已在 resolveTarget 中说明 */ }
+    }
+
     if (process.env.MCP_WEB_UI !== 'false') {
       // Start web server with reference to this instance
       startWebServer(this);
@@ -699,13 +899,14 @@ function startWebServer(mcpServer: MySqlServer) {
       user: c.user,
       database: c.database,
       env: c.env,
+      ssh: c.ssh || null,
       active: c.name === config.activeConnection,
     }));
     res.json({ connections, activeConnection: config.activeConnection });
   });
 
   app.post('/api/connections', (req, res) => {
-    const { name, originalName, host, port, user, password, database, env } = req.body || {};
+    const { name, originalName, host, port, user, password, database, env, ssh } = req.body || {};
     if (!name || !host || !user) {
       return res.status(400).json({ error: 'name、host、user 为必填项' });
     }
@@ -726,12 +927,17 @@ function startWebServer(mcpServer: MySqlServer) {
       password: password ? String(password) : (existing?.password || ''),
       database: database || '',
       env: normalizeEnv(env),
+      ssh: normalizeSsh(ssh),
     };
     if (idx >= 0) config.connections[idx] = conn;
     else config.connections.push(conn);
     // 改名时同步活动连接标记，避免指向已重命名的连接
     if (config.activeConnection === lookup && lookup !== name) {
       config.activeConnection = name;
+    }
+    // SSH 目标变了就把旧隧道断掉，下次使用重新拉起
+    if (lookup !== name || JSON.stringify(existing?.ssh || null) !== JSON.stringify(conn.ssh || null)) {
+      killTunnel(lookup);
     }
     saveConfig(config);
     res.json({ success: true, env: conn.env, name: conn.name, renamed: lookup !== name });
@@ -745,6 +951,7 @@ function startWebServer(mcpServer: MySqlServer) {
     const wasActive = config.activeConnection === name;
     config.connections.splice(idx, 1);
     if (wasActive) config.activeConnection = null;
+    killTunnel(name);
     saveConfig(config);
     if (wasActive) await mcpServer.clearConnection();
     res.json({ success: true });
@@ -759,28 +966,49 @@ function startWebServer(mcpServer: MySqlServer) {
     }
     config.activeConnection = name;
     saveConfig(config);
-    // 立即切换 MCP 服务器的连接池
-    await mcpServer.switchConnection(conn);
-    res.json({ success: true, env: conn.env });
+    // 立即切换 MCP 服务器的连接池（可能要先拉 SSH 隧道，失败要回给前端）
+    try {
+      await mcpServer.switchConnection(conn);
+      res.json({ success: true, env: conn.env });
+    } catch (e) {
+      res.status(500).json({ success: false, error: describeError(e) });
+    }
   });
 
   app.post('/api/connections/test', async (req, res) => {
-    const { host, port, user, password, database, name, originalName } = req.body || {};
+    const { host, port, user, password, database, name, originalName, ssh } = req.body || {};
     let resolvedPassword = password;
     // 编辑已有连接时前端不回显密码，此时用已保存的密码测试
     if ((!resolvedPassword || resolvedPassword === '') && (originalName || name)) {
       const saved = loadConfig().connections.find(c => c.name === (originalName || name));
       resolvedPassword = saved?.password;
     }
+    // 保存的密码是密文，测试前先解密
+    resolvedPassword = resolvedPassword ? decryptPassword(resolvedPassword) : '';
+
+    // 有 SSH 配置时先拉起临时隧道，测完即拆
+    const testKey = `__test__${randomUUID()}`;
     try {
+      const target = await ensureTunnel({
+        name: testKey,
+        host,
+        port: Number(port) || 3306,
+        user,
+        password: resolvedPassword,
+        database: database || '',
+        env: 'test',
+        ssh: normalizeSsh(ssh),
+      });
       const conn = await mysql.createConnection({
-        host, port: Number(port) || 3306, user, password: resolvedPassword, database,
+        host: target.host, port: target.port, user, password: resolvedPassword, database,
       });
       await conn.query('SELECT 1');
       await conn.end();
       res.json({ success: true, message: '连接成功' });
     } catch (e: any) {
-      res.json({ success: false, message: e.message });
+      res.json({ success: false, message: describeError(e) });
+    } finally {
+      killTunnel(testKey);
     }
   });
 
@@ -813,7 +1041,10 @@ function startWebServer(mcpServer: MySqlServer) {
     })
     .on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`[Web UI] Port ${WEB_PORT} is already in use. Set MCP_WEB_PORT to use a different port.`);
+        console.error(
+          `[Web UI] 端口 ${WEB_PORT} 已被占用（通常是另一个 MCP 实例在跑）。本实例不提供 Web UI，` +
+          `但 MCP 工具照常可用，并会自动跟随配置文件里的激活连接变更。`
+        );
       } else {
         console.error('Web server error:', err);
       }

@@ -187,6 +187,14 @@ body {
 .badge.active-badge { color: var(--accent); background: var(--accent-soft); }
 
 .empty { padding: 28px; text-align: center; color: var(--text-muted); font-size: 13px; }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; user-select: none; }
+.check-row input { accent-color: var(--accent); width: 14px; height: 14px; }
+.ssh-fields {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius-md);
+  background: rgba(56,189,248,.03);
+}
+.hint-sm { margin: 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; }
 
 .hint {
   font-size: 12.5px; color: var(--text-muted); line-height: 1.7;
@@ -294,6 +302,29 @@ body {
             <div class="field">
               <label for="f-database">默认数据库（可选）</label>
               <input id="f-database" name="database" placeholder="ruoyi-vue-pro">
+            </div>
+            <div class="field">
+              <label class="check-row">
+                <input type="checkbox" id="f-ssh-enabled">
+                <span>通过 SSH 隧道访问（内网库 / 本机访问受限时）</span>
+              </label>
+            </div>
+            <div id="ssh-fields" class="ssh-fields hidden">
+              <div class="field">
+                <label for="f-ssh-host">SSH 主机</label>
+                <input id="f-ssh-host" placeholder="ssh66（也可填 user@host）">
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="f-ssh-port">SSH 端口</label>
+                  <input id="f-ssh-port" type="number" placeholder="22">
+                </div>
+                <div class="field">
+                  <label for="f-ssh-user">SSH 用户</label>
+                  <input id="f-ssh-user" placeholder="留空用 ssh 配置">
+                </div>
+              </div>
+              <p class="hint-sm">上面的「主机 / 端口」表示<strong>从跳板机看到的 MySQL 地址</strong>，例如 192.168.14.66:3306。隧道由 MCP 自动拉起，需要该 ssh 支持免密登录。</p>
             </div>
           </div>
           <div class="form-actions">
@@ -412,7 +443,8 @@ function renderConnections() {
           activeBadge +
         '</div>' +
         '<div class="conn-meta">' + esc(c.user) + '@' + esc(c.host) + ':' + esc(c.port) +
-          (c.database ? ' / ' + esc(c.database) : '') + '</div>' +
+          (c.database ? ' / ' + esc(c.database) : '') +
+          (c.ssh ? ' · 🔒 ' + esc(c.ssh.host) : '') + '</div>' +
       '</div>' +
       '<div class="conn-actions">' +
         '<button class="btn btn-sm btn-ghost" data-act="activate" data-name="' + name + '">使用</button>' +
@@ -466,6 +498,12 @@ function fillForm(conn) {
   $('f-user').value = conn ? conn.user : '';
   $('f-password').value = '';
   $('f-database').value = conn ? (conn.database || '') : '';
+  var ssh = conn && conn.ssh ? conn.ssh : null;
+  $('f-ssh-enabled').checked = !!ssh;
+  $('f-ssh-host').value = ssh ? ssh.host : '';
+  $('f-ssh-port').value = ssh && ssh.port ? ssh.port : '';
+  $('f-ssh-user').value = ssh && ssh.user ? ssh.user : '';
+  toggleSshFields();
   setEnvRadio(conn ? conn.env : 'prod');
   state.editing = conn ? conn.name : null;
   $('form-title').textContent = conn ? '编辑连接：' + conn.name : '添加连接';
@@ -483,8 +521,24 @@ function readForm() {
     user: $('f-user').value.trim(),
     password: $('f-password').value,
     database: $('f-database').value.trim(),
-    env: checked ? checked.value : 'prod'
+    env: checked ? checked.value : 'prod',
+    ssh: sshPayload()
   };
+}
+
+function toggleSshFields() {
+  $('ssh-fields').classList.toggle('hidden', !$('f-ssh-enabled').checked);
+}
+
+function sshPayload() {
+  if (!$('f-ssh-enabled').checked) return null;
+  var host = $('f-ssh-host').value.trim();
+  if (!host) return null;
+  var ssh = { host: host };
+  if ($('f-ssh-port').value) ssh.port = Number($('f-ssh-port').value);
+  var user = $('f-ssh-user').value.trim();
+  if (user) ssh.user = user;
+  return ssh;
 }
 
 function saveConnection(event) {
@@ -586,6 +640,7 @@ document.querySelector('.tabs').addEventListener('click', function (event) {
   if (tab) switchTab(tab.getAttribute('data-tab'));
 });
 $('conn-form').addEventListener('submit', saveConnection);
+$('f-ssh-enabled').addEventListener('change', toggleSshFields);
 $('btn-test').addEventListener('click', testConnection);
 $('btn-cancel').addEventListener('click', function () { fillForm(null); });
 $('btn-save-perms').addEventListener('click', savePermissions);
