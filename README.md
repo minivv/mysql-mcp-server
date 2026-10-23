@@ -10,17 +10,17 @@
 
 ### Why This Server?
 
-Most MySQL MCP servers expose a pile of overlapping tools (`create_table`, `insert_data`, `update_data`, …) with identical arguments, and treat safety as a keyword blacklist. That answers the wrong question. What an agent actually needs to know is:
+Every statement an agent runs happens somewhere specific — a database it is free to break, or the one real users depend on. This server makes that context part of the protocol:
 
-1. **Where am I?** — test or production?
-2. **What am I allowed to do here?**
-3. **How do I reach a database that only exists inside a private network?**
+1. **Where am I?** Every connection carries a `test` or `prod` tag, and every tool response reports it.
+2. **What am I allowed to do here?** Five permission switches per tag, enforced before the statement ever reaches MySQL.
+3. **How do I reach a database that only exists inside a private network?** A managed SSH tunnel.
 
-This server answers exactly those three, with four tools instead of fifteen.
+The parts that do not belong in a chat — connection management, permission templates, and a live view of what the server exposes — live in a web console.
 
 ### Features
 
-- **4 tools, no overlap** — `run_sql_query`, `execute_sql`, `inspect`, `switch_database`
+- **Four focused tools** — `run_sql_query`, `execute_sql`, `inspect`, `switch_database`, each with a single clear job
 - **Environment tagging** — every connection is `test` or `prod`; permissions are bound to the tag, not the connection
 - **5 granular write switches** — Basic DDL / Advanced DDL (DROP, TRUNCATE) / INSERT / UPDATE / DELETE. `prod` defaults to read-only
 - **Self-describing results** — every tool response carries `env`, `envLabel`, `readOnly`, `allowedWrites`, so the model never has to guess
@@ -170,19 +170,19 @@ MIT
 
 ## 中文
 
-### 为什么需要它
+### 为什么用它
 
-常见的 MySQL MCP 会把十几个语义重叠的工具塞给模型（`create_table`、`insert_data`、`update_data`…），参数却完全一样，安全上只靠关键字黑名单。可模型真正需要知道的是三件事：
+agent 执行的每一条 SQL 都发生在具体的某个地方——它可以随便搞坏的库，或者真实用户正在用的那个库。这个服务把「在哪儿」变成协议的一部分：
 
-1. **我现在在哪？** 测试库还是正式库？
-2. **这里允许我做什么？**
-3. **只能内网访问的库，我怎么连？**
+1. **我在哪？** 每个连接带 `test` / `prod` 标识，每次工具返回都会报出当前所处环境。
+2. **这里允许我做什么？** 每个标识五项权限开关，在语句到达 MySQL 之前就拦下。
+3. **只能内网访问的库怎么连？** 服务端托管的 SSH 隧道。
 
-这个项目就回答这三个问题，用 4 个工具代替 15 个。
+不适合塞进对话里的东西——连接管理、权限模板、当前到底暴露了什么——都放在 Web 控制台里。
 
 ### 功能特性
 
-- **4 个工具，互不重叠** —— `run_sql_query`、`execute_sql`、`inspect`、`switch_database`
+- **四个聚焦的工具** —— `run_sql_query`、`execute_sql`、`inspect`、`switch_database`，每个只干一件事
 - **库环境标识** —— 每个连接标记为 `test` 或 `prod`，权限绑在标识上而不是单个连接上
 - **5 项细粒度写开关** —— 基础 DDL / 高级 DDL（DROP、TRUNCATE）/ INSERT / UPDATE / DELETE；正式库默认只读
 - **返回值自描述** —— 每次调用都带 `env`、`envLabel`、`readOnly`、`allowedWrites`，模型不用猜
@@ -292,8 +292,6 @@ ssh -o BatchMode=yes <ssh别名> echo OK
 | `connections.json` | 已保存的连接、当前激活连接、环境标识、SSH 配置 |
 | `permissions.json` | 两套权限模板（`test`、`prod`） |
 | `.key` | 用于加密密码与 SSH 口令的 AES-256-GCM 密钥（权限 `0600`） |
-
-拆分基础/高级 DDL 之前的旧 `permissions.json` 会自动迁移（`ddl` 同时映射到两个 DDL 开关）。
 
 ### 环境变量
 
