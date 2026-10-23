@@ -340,7 +340,7 @@ body {
             <div class="field">
               <label class="check-row">
                 <input type="checkbox" id="f-ssh-enabled">
-                <span>通过 SSH 隧道访问（内网库 / 本机访问受限时）</span>
+                <span>通过 SSH 隧道访问</span>
               </label>
             </div>
             <div id="ssh-fields" class="ssh-fields hidden">
