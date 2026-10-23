@@ -1,46 +1,35 @@
 # MySQL MCP Server
 
-[English](#english) | [中文](#中文)
+> A MySQL tool layer for AI agents that **knows which database it is talking to**: per-connection test/prod tagging, fine-grained write permissions, SSH tunnels for intranet databases, and a visual web console.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org)
-[![MCP](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io)
+[English](#english) · [中文](#中文)
 
 ---
 
-<a name="english"></a>
 ## English
 
-A powerful MySQL MCP (Model Context Protocol) server that enables AI assistants like Claude to interact with MySQL databases.
+### Why This Server?
 
-### Why This MCP Server?
+Most MySQL MCP servers expose a pile of overlapping tools (`create_table`, `insert_data`, `update_data`, …) with identical arguments, and treat safety as a keyword blacklist. That answers the wrong question. What an agent actually needs to know is:
 
-Unlike other MySQL MCP servers, this project offers:
+1. **Where am I?** — test or production?
+2. **What am I allowed to do here?**
+3. **How do I reach a database that only exists inside a private network?**
 
-- **Web Management UI** - Visual interface to manage all your database connections
-- **Real-time Connection Switching** - Switch between databases instantly without restarting
-- **Smart Config Parsing** - Paste JDBC URL or Spring Boot config, auto-fill connection form
-- **Secure Password Storage** - AES-256-GCM encrypted passwords
-- **Environment-aware Permissions** - Tag each connection as test/prod; prod is read-only by default
-
-### Screenshots
-
-<!-- Add your screenshots here -->
-![Web UI](images/web-ui-en.png)
-
-### Acknowledgments
-
-This project is inspired by and built upon [designcomputer/mysql_mcp_server](https://github.com/designcomputer/mysql_mcp_server). Special thanks to the original authors for their excellent work.
+This server answers exactly those three, with four tools instead of fifteen.
 
 ### Features
 
-- **4 Focused Tools**: `run_sql_query`, `execute_sql`, `inspect`, `switch_database`
-- **Environment Permissions**: per-connection `test` / `prod` tag, write operations gated by a shared template per tag (`prod` defaults to read-only)
-- **Web UI**: Visual interface at `http://localhost:3456`
-- **Secure Storage**: Passwords encrypted with AES-256-GCM
-- **MCP Compatible**: Works with Claude Desktop and other MCP clients
+- **4 tools, no overlap** — `run_sql_query`, `execute_sql`, `inspect`, `switch_database`
+- **Environment tagging** — every connection is `test` or `prod`; permissions are bound to the tag, not the connection
+- **5 granular write switches** — Basic DDL / Advanced DDL (DROP, TRUNCATE) / INSERT / UPDATE / DELETE. `prod` defaults to read-only
+- **Self-describing results** — every tool response carries `env`, `envLabel`, `readOnly`, `allowedWrites`, so the model never has to guess
+- **SSH tunnels** — reach intranet MySQL through a jump host; key file + optional passphrase, managed by the server
+- **Web console** — three tabs: connections, permissions, tools & policy
+- **Hot switching** — change the active connection in the UI; running MCP sessions follow automatically, no restart
+- **Encrypted at rest** — passwords and SSH passphrases use AES-256-GCM
 
-### Installation
+### Quick Start
 
 ```bash
 git clone https://github.com/minivv/mysql-mcp-server.git
@@ -49,33 +38,9 @@ npm install
 npm run build
 ```
 
-### Configuration
+Start it once so the web console opens at <http://localhost:3456>, add a connection, tag it, and click **Use**.
 
-The server no longer requires a default database connection in environment variables.
-Start the MCP server, open the Web UI, then add and activate your MySQL connection there.
-Connections are saved in `~/.mysql-mcp/connections.json`.
-
-#### Optional Environment Variables
-
-```bash
-MCP_WEB_PORT=3456              # Web UI port (default: 3456)
-MCP_OPEN_BROWSER=false         # Disable auto-open browser (default: true)
-
-# Optional legacy default connection fallback.
-# If no Web UI connection is active, MYSQL_HOST and MYSQL_USER can still be used.
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your_password
-MYSQL_DATABASE=your_database
-MYSQL_ENV=prod                 # test | prod, default: prod
-MCP_WEB_UI=false               # Disable the Web UI server entirely
-```
-
-#### Claude Desktop Configuration
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+### MCP Client Configuration
 
 ```json
 {
@@ -91,128 +56,142 @@ MCP_WEB_UI=false               # Disable the Web UI server entirely
 }
 ```
 
-### Available Tools
+Claude Desktop config lives at `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
 
-| Tool | Description |
-|------|-------------|
-| `run_sql_query` | Read-only SQL (SELECT / SHOW / DESCRIBE / EXPLAIN / read-only WITH). Always allowed. Supports `max_rows` (default 500, max 10000). |
-| `execute_sql` | Any SQL statement. Whether it runs depends on the write permissions of the current connection's environment tag. |
-| `inspect` | No args: database list + tables of the current database. With `database`: tables of that database. With `table`: table structure. |
-| `switch_database` | Switch the current database. |
+### Tools
 
-Connection management (add / edit / delete / activate / permission templates) lives in the Web UI, not in MCP tools — that keeps the tool surface small and keeps passwords out of the conversation.
+| Tool | Arguments | Description |
+|------|-----------|-------------|
+| `run_sql_query` | `query`, `max_rows?` | Read-only SQL (`SELECT` / `SHOW` / `DESCRIBE` / `EXPLAIN` / read-only `WITH`). Allowed in every environment. Truncates at `max_rows` (default 500). |
+| `execute_sql` | `query` | Write SQL (INSERT / UPDATE / DELETE / DDL). Gated by the environment tag and its permission template; a rejection explains which rule fired. |
+| `inspect` | `database?`, `table?` | No arguments → databases + tables of the current database. `database` → its tables. `table` → table structure. |
+| `switch_database` | `database` | Switch the current database. Does **not** change the test/prod tag. |
 
-Every tool response carries the environment block, so the assistant knows where it is **before** attempting a write:
+Example response:
 
 ```json
-{ "env": "prod", "envLabel": "正式库", "readOnly": true, "allowedWrites": [] }
+{
+  "env": "prod",
+  "envLabel": "正式库",
+  "readOnly": true,
+  "allowedWrites": [],
+  "rowCount": 1,
+  "rows": [{ "cnt": 42 }]
+}
 ```
 
 ### Web UI
 
-The Web UI starts automatically with the MCP server at `http://localhost:3456`.
-On first launch, add a connection, tag it as test or prod, and click **Use** before running database tools.
+![Web UI](images/web-ui-en.png)
 
-**Tabs:**
-- **Connections** — add/edit/delete connections, test connectivity, one-click switch, env tag per connection, optional SSH tunnel, filter list by 全部 / 测试库 / 正式库
-- **Permissions** — five switches (Basic DDL / Advanced DDL / INSERT / UPDATE / DELETE) per env tag (`test`, `prod`)
-- **Tools & Policy** — the exposed MCP tools with their parameters, the effective policy of the active connection, and the statement-classification rules
-
-**Disable auto-open browser:**
-```bash
-MCP_OPEN_BROWSER=false
-```
-
-### SSH Tunnels
-
-If MySQL is only reachable from a jump host (private network / VPN-only), enable **SSH tunnel** on that connection. The server spawns `ssh -N -L` itself and reuses the tunnel for the lifetime of the connection pool.
-
-- **SSH host** — an alias from `~/.ssh/config` (e.g. `ssh66`), or an explicit `host` / `user` pair
-- **Key file / passphrase** — optional; a passphrase is stored encrypted (AES-256-GCM) and fed to `ssh` through an ephemeral `SSH_ASKPASS` helper
-- The connection's **host / port** then mean *"where MySQL listens as seen from the jump host"* (usually `127.0.0.1:3306`)
-- Without a passphrase, auth runs in `BatchMode=yes` (no prompts); configure passwordless key auth first
-- The local forwarding port is chosen automatically (starting from `13306`)
-- Tunnels are torn down on connection switch / delete and on `SIGINT` / `SIGTERM`
-
-```bash
-# Pre-check: key auth must work without prompting
-ssh -o BatchMode=yes <ssh-alias> echo OK
-```
-
-### Security
-
-- Passwords are encrypted using AES-256-GCM
-- Encryption key stored in `~/.mysql-mcp/.key` (mode 0600)
-- Connection configs stored in `~/.mysql-mcp/connections.json`
-- Dangerous-statement interception is a **guardrail, not a security boundary** — use a least-privilege MySQL account as the real boundary.
+- **Connections** — add / edit / delete / test connections, tag as test or prod, filter the list, enable an SSH tunnel, one-click switch
+- **Permissions** — five switches per tag (`test`, `prod`). Change a template once and every connection with that tag follows
+- **Tools & Policy** — the live tool list with argument hints, the effective policy of the active connection, and the statement-classification rules
 
 ### Environment Permissions
 
-Every connection carries an environment tag: `test` or `prod`. Permissions are bound to the **tag**, not the connection: change a template once and every connection with that tag follows immediately.
+Permissions are bound to the **tag**, not to individual connections.
 
 | Operation | Statements | Default `test` | Default `prod` |
 |-----------|------------|:--------------:|:--------------:|
-| Basic DDL | CREATE / RENAME / ALTER (without DROP) | ✅ | ❌ |
+| Basic DDL | CREATE / RENAME / ALTER without DROP | ✅ | ❌ |
 | Advanced DDL | DROP / TRUNCATE / ALTER … DROP | ✅ | ❌ |
 | INSERT | INSERT / REPLACE | ✅ | ❌ |
 | UPDATE | UPDATE | ✅ | ❌ |
 | DELETE | DELETE | ✅ | ❌ |
 | Read | SELECT / SHOW / DESCRIBE / EXPLAIN / read-only WITH | ✅ | ✅ |
 
-Read-only statements are never gated. Anything that cannot be classified is treated as advanced DDL and blocked on `prod`. Statements are normalised first (leading `--` / `/* */` / `#` comments are stripped, `WITH … DELETE` is detected as a write), so `/* x */ DELETE …` does not slip through.
+Statements are normalised before classification: leading `--`, `/* */` and `#` comments are stripped, and `WITH … DELETE` is recognised as a write — so `/* x */ DELETE …` does not slip through. Anything that cannot be classified is treated as **advanced DDL**, the strictest bucket.
 
-**Configuration file:** `~/.mysql-mcp/permissions.json` (managed by the Web UI). Configs written before the DDL split are migrated automatically (`ddl` maps to both DDL switches).
+### SSH Tunnels
 
-```json
-{
-  "test": { "basicDdl": true, "advancedDdl": true, "insert": true, "update": true, "delete": true },
-  "prod": { "basicDdl": false, "advancedDdl": false, "insert": false, "update": false, "delete": false }
-}
+For databases that only the jump host can see, enable **SSH tunnel** on the connection. The server spawns `ssh -N -L` itself and reuses the tunnel for the lifetime of the connection pool.
+
+- **SSH host** — an alias from `~/.ssh/config` (e.g. `ssh66`), or an explicit host/user pair
+- **Key file / passphrase** — optional; the passphrase is stored encrypted and fed to `ssh` through an ephemeral `SSH_ASKPASS` helper
+- The connection's **host / port** then mean *"where MySQL listens as seen from the jump host"* (usually `127.0.0.1:3306`)
+- Without a passphrase, auth runs in `BatchMode=yes`; configure passwordless key auth first
+- The local forwarding port is picked automatically from `13306` upwards
+- Tunnels are closed on connection switch / delete and on `SIGINT` / `SIGTERM`
+
+```bash
+# Pre-check: key auth must work without prompting
+ssh -o BatchMode=yes <ssh-alias> echo OK
 ```
 
-### Contributing
+### Configuration Files
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Everything lives in `~/.mysql-mcp/`:
+
+| File | Contents |
+|------|----------|
+| `connections.json` | Saved connections, active connection, environment tags, SSH settings |
+| `permissions.json` | The two permission templates (`test`, `prod`) |
+| `.key` | AES-256-GCM key for passwords and passphrases (mode `0600`) |
+
+### Environment Variables
+
+```bash
+MCP_WEB_PORT=3456          # Web console port (default 3456)
+MCP_OPEN_BROWSER=false     # Do not auto-open the browser
+MCP_WEB_UI=false           # Do not start the web console at all
+
+# Legacy fallback, used only when no connection has been activated in the UI
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=secret
+MYSQL_DATABASE=app
+MYSQL_ENV=prod             # test | prod, default prod
+```
+
+### Security
+
+- Passwords and SSH passphrases are encrypted with AES-256-GCM; keys are written with mode `0600`
+- `multipleStatements` is disabled — one query argument cannot smuggle a second statement
+- Selections are capped by `max_rows` (default 500)
+- The permission switches are a **guardrail, not a security boundary**. The real boundary is a least-privilege MySQL account per environment — use one.
+
+### Development
+
+```bash
+npm install
+npm run build     # tsc → build/
+node build/index.js
+```
+
+Source layout: `src/index.ts` (MCP server, web API, SSH tunnels) and `src/web-ui.ts` (the console page, shipped as a single HTML string).
 
 ### License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT
 
 ---
 
-<a name="中文"></a>
 ## 中文
 
-一个功能强大的 MySQL MCP (Model Context Protocol) 服务器，让 Claude 等 AI 助手能够与 MySQL 数据库进行交互。
+### 为什么需要它
 
-### 为什么选择这个 MCP 服务器？
+常见的 MySQL MCP 会把十几个语义重叠的工具塞给模型（`create_table`、`insert_data`、`update_data`…），参数却完全一样，安全上只靠关键字黑名单。可模型真正需要知道的是三件事：
 
-与其他 MySQL MCP 服务器不同，本项目提供：
+1. **我现在在哪？** 测试库还是正式库？
+2. **这里允许我做什么？**
+3. **只能内网访问的库，我怎么连？**
 
-- **Web 管理界面** - 可视化管理所有数据库连接
-- **实时切换连接** - 无需重启即可在不同数据库间切换
-- **智能配置解析** - 粘贴 JDBC URL 或 Spring Boot 配置，自动填充表单
-- **安全密码存储** - 使用 AES-256-GCM 加密存储密码
-- **库环境权限** - 每个连接标记测试库/正式库，正式库默认只读
-
-### 截图
-
-<!-- 在此添加截图 -->
-![Web 管理界面](images/web-ui-cn.png)
-
-### 致谢
-
-本项目基于 [designcomputer/mysql_mcp_server](https://github.com/designcomputer/mysql_mcp_server) 开发，特别感谢原作者的优秀工作。
+这个项目就回答这三个问题，用 4 个工具代替 15 个。
 
 ### 功能特性
 
-- **4 个精简工具**: `run_sql_query`、`execute_sql`、`inspect`、`switch_database`
-- **库环境权限**: 每个连接带 `test` / `prod` 标识，写操作按标识套用共享权限模板（正式库默认只读）
-- **Web 界面**: 可视化管理界面 `http://localhost:3456`
-- **安全存储**: 密码使用 AES-256-GCM 加密
-- **MCP 兼容**: 支持 Claude Desktop 和其他 MCP 客户端
+- **4 个工具，互不重叠** —— `run_sql_query`、`execute_sql`、`inspect`、`switch_database`
+- **库环境标识** —— 每个连接标记为 `test` 或 `prod`，权限绑在标识上而不是单个连接上
+- **5 项细粒度写开关** —— 基础 DDL / 高级 DDL（DROP、TRUNCATE）/ INSERT / UPDATE / DELETE；正式库默认只读
+- **返回值自描述** —— 每次调用都带 `env`、`envLabel`、`readOnly`、`allowedWrites`，模型不用猜
+- **SSH 隧道** —— 通过跳板机访问内网 MySQL，支持密钥文件与口令，隧道由服务端托管
+- **Web 控制台** —— 连接管理、权限配置、工具与策略三个标签页
+- **热切换连接** —— 在界面里换连接，正在运行的 MCP 会话自动跟随，不用重启
+- **密码加密存储** —— 数据库密码与 SSH 口令均为 AES-256-GCM 加密
 
-### 安装
+### 快速开始
 
 ```bash
 git clone https://github.com/minivv/mysql-mcp-server.git
@@ -221,33 +200,9 @@ npm install
 npm run build
 ```
 
-### 配置
+先启动一次，浏览器会打开 <http://localhost:3456>，添加连接、选择标识，点**使用**。
 
-现在不再需要通过环境变量配置默认数据库连接。
-启动 MCP 服务器后，打开 Web 界面，在页面中添加并启用 MySQL 连接即可。
-连接配置会保存到 `~/.mysql-mcp/connections.json`。
-
-#### 可选环境变量
-
-```bash
-MCP_WEB_PORT=3456              # Web 界面端口 (默认: 3456)
-MCP_OPEN_BROWSER=false         # 禁用自动打开浏览器 (默认: true)
-
-# 可选：兼容旧版默认连接配置。
-# 如果 Web 界面中没有启用连接，仍可通过 MYSQL_HOST 和 MYSQL_USER 提供默认连接。
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your_password
-MYSQL_DATABASE=your_database
-MYSQL_ENV=prod                 # test | prod，默认 prod
-MCP_WEB_UI=false               # 完全关闭 Web 服务
-```
-
-#### Claude Desktop 配置
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+### MCP 客户端配置
 
 ```json
 {
@@ -263,47 +218,64 @@ MCP_WEB_UI=false               # 完全关闭 Web 服务
 }
 ```
 
-### 可用工具
+Claude Desktop 的配置位置：macOS 是 `~/Library/Application Support/Claude/claude_desktop_config.json`，Windows 是 `%APPDATA%\Claude\claude_desktop_config.json`。
 
-| 工具 | 描述 |
-|------|------|
-| `run_sql_query` | 只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / 只读 WITH），永不受权限拦截。支持 `max_rows`（默认 500，上限 10000）。 |
-| `execute_sql` | 执行任意 SQL，是否放行取决于当前连接所属库环境标识的写权限模板。 |
-| `inspect` | 无参数：库列表 + 当前库的表；传 `database`：该库的表；传 `table`：表结构。 |
-| `switch_database` | 切换当前数据库。 |
+### 工具清单
 
-连接管理（新增/编辑/删除/启用/权限模板）全部在 Web 界面完成，不占用 MCP 工具位，也避免密码穿进对话。
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `run_sql_query` | `query`、`max_rows?` | 只读 SQL（`SELECT` / `SHOW` / `DESCRIBE` / `EXPLAIN` / 只读 `WITH`），任何环境都放行。超过 `max_rows`（默认 500）会被截断 |
+| `execute_sql` | `query` | 写操作 SQL（INSERT / UPDATE / DELETE / DDL）。是否放行由连接的库环境标识及其权限模板决定，被拦截时会说明命中了哪条规则 |
+| `inspect` | `database?`、`table?` | 不带参数返回库列表 + 当前库的表；传 `database` 返回该库的表；传 `table` 返回表结构 |
+| `switch_database` | `database` | 切换当前数据库，**不会**改变测试库/正式库标识 |
 
-每个工具的返回都带库环境信息，AI 在尝试写操作**之前**就知道自己在哪：
+返回示例：
 
 ```json
-{ "env": "prod", "envLabel": "正式库", "readOnly": true, "allowedWrites": [] }
+{
+  "env": "test",
+  "envLabel": "测试库",
+  "readOnly": false,
+  "allowedWrites": ["basicDdl", "advancedDdl", "insert", "update", "delete"],
+  "rowCount": 1,
+  "rows": [{ "cnt": 42 }]
+}
 ```
 
-### Web 管理界面
+### Web 控制台
 
-Web 界面随 MCP 服务器自动启动，访问 `http://localhost:3456`。
-首次启动时，先添加连接、选择测试库/正式库标识，点击**使用**后再运行数据库工具。
+![连接管理](images/web-ui-cn.png)
 
-**两个标签页：**
-- **连接管理** — 新增/编辑/删除连接、测试连通性、一键切换、设置库环境标识、可选 SSH 隧道，列表可按 全部 / 测试库 / 正式库 筛选
-- **权限配置** — 按标识（测试库 / 正式库）分别控制基础 DDL / 高级 DDL / INSERT / UPDATE / DELETE 五个开关
-- **工具与策略** — 对外暴露的 MCP 工具及参数、当前连接的生效策略、语句归类与兜底规则
+- **连接管理** —— 新增 / 编辑 / 删除 / 测试连接，标记测试库或正式库，按标识筛选，可选 SSH 隧道，一键切换
+- **权限配置** —— 按标识（`test`、`prod`）各 5 个开关，改一次即对该标识下所有连接生效
+- **工具与策略** —— 实时展示对外暴露的工具与参数、当前连接的生效策略、语句归类与兜底规则
 
-**禁用自动打开浏览器：**
-```bash
-MCP_OPEN_BROWSER=false
-```
+![工具与策略](images/web-ui-tools.png)
+
+### 库环境权限
+
+权限绑在**标识**上，而不是单个连接上。
+
+| 操作 | 对应语句 | 测试库默认 | 正式库默认 |
+|------|----------|:----------:|:----------:|
+| 基础 DDL | CREATE / RENAME / 不含 DROP 的 ALTER | ✅ | ❌ |
+| 高级 DDL | DROP / TRUNCATE / ALTER … DROP | ✅ | ❌ |
+| INSERT | INSERT / REPLACE | ✅ | ❌ |
+| UPDATE | UPDATE | ✅ | ❌ |
+| DELETE | DELETE | ✅ | ❌ |
+| 只读 | SELECT / SHOW / DESCRIBE / EXPLAIN / 只读 WITH | ✅ | ✅ |
+
+判断前会先做归一化：剔除开头的 `--`、`/* */`、`#` 注释，识别 `WITH … DELETE` 这类型写语句，所以 `/* x */ DELETE …` 绕不过去。无法识别的语句一律按**高级 DDL** 处理（最严格的一档）。
 
 ### SSH 隧道
 
-如果 MySQL 只能从跳板机访问（内网 / 仅 VPN 可达），在该连接上开启 **SSH 隧道**。服务器会自己拉起 `ssh -N -L`，并在连接池生命周期内复用该隧道。
+如果 MySQL 只能从跳板机访问，在连接上勾选 **SSH 隧道**。服务端会自己拉起 `ssh -N -L`，并在连接池生命周期内复用该隧道。
 
-- **SSH 主机** — `~/.ssh/config` 里的别名（如 `ssh66`），或直接填 `host` / `user`
-- **密钥文件 / 口令** — 可选；口令用 AES-256-GCM 加密存储，通过临时 `SSH_ASKPASS` 辅助脚本交给 `ssh`
+- **SSH 主机** —— `~/.ssh/config` 里的别名（如 `ssh66`），或直接填主机 / 用户
+- **密钥文件 / 口令** —— 可选；口令加密存储，通过临时 `SSH_ASKPASS` 脚本交给 `ssh`
 - 连接里的 **主机 / 端口** 此时表示「从跳板机看到的 MySQL 地址」（通常 `127.0.0.1:3306`）
-- 未填口令时走 `BatchMode=yes`（不弹交互提示），请先配好免密登录
-- 本地转发端口自动选择（从 `13306` 起）
+- 未填口令时走 `BatchMode=yes`，请先配好免密登录
+- 本地转发端口从 `13306` 起自动挑选
 - 切换连接、删除连接、收到 `SIGINT` / `SIGTERM` 时自动关闭隧道
 
 ```bash
@@ -311,41 +283,51 @@ MCP_OPEN_BROWSER=false
 ssh -o BatchMode=yes <ssh别名> echo OK
 ```
 
-### 安全性
+### 配置文件
 
-- 密码使用 AES-256-GCM 加密存储
-- 加密密钥保存在 `~/.mysql-mcp/.key` (权限 0600)
-- 连接配置保存在 `~/.mysql-mcp/connections.json`
-- 语句拦截是**保险丝，不是安全边界**；真正的边界是最小权限的 MySQL 账号。
+所有状态都在 `~/.mysql-mcp/` 下：
 
-### 库环境权限
+| 文件 | 内容 |
+|------|------|
+| `connections.json` | 已保存的连接、当前激活连接、环境标识、SSH 配置 |
+| `permissions.json` | 两套权限模板（`test`、`prod`） |
+| `.key` | 用于加密密码与 SSH 口令的 AES-256-GCM 密钥（权限 `0600`） |
 
-每个连接带一个环境标识：`test` 或 `prod`。权限绑在**标识**上而不是单个连接上：改一次模板，所有使用该标识的连接立即生效。
+拆分基础/高级 DDL 之前的旧 `permissions.json` 会自动迁移（`ddl` 同时映射到两个 DDL 开关）。
 
-| 操作 | 对应语句 | 测试库默认 | 正式库默认 |
-|------|----------|:----------:|:----------:|
-| 基础 DDL | CREATE / RENAME / ALTER（不含 DROP） | ✅ | ❌ |
-| 高级 DDL | DROP / TRUNCATE / ALTER … DROP | ✅ | ❌ |
-| INSERT | INSERT / REPLACE | ✅ | ❌ |
-| UPDATE | UPDATE | ✅ | ❌ |
-| DELETE | DELETE | ✅ | ❌ |
-| 只读 | SELECT / SHOW / DESCRIBE / EXPLAIN / 只读 WITH | ✅ | ✅ |
+### 环境变量
 
-只读语句永不受限。无法识别的语句一律按高级 DDL 处理，在正式库上被拦截。判断前会先做归一化（剔除开头 `--`、`/* */`、`#` 注释，识别 `WITH … DELETE` 这类型写语句），所以 `/* x */ DELETE …` 无法绕过。
+```bash
+MCP_WEB_PORT=3456          # Web 控制台端口，默认 3456
+MCP_OPEN_BROWSER=false     # 不自动打开浏览器
+MCP_WEB_UI=false           # 完全不启动 Web 控制台
 
-**配置文件：** `~/.mysql-mcp/permissions.json`（由 Web 界面维护）。拆分 DDL 之前的旧配置会自动迁移（`ddl` 同时映射到基础 / 高级 DDL）。
-
-```json
-{
-  "test": { "basicDdl": true, "advancedDdl": true, "insert": true, "update": true, "delete": true },
-  "prod": { "basicDdl": false, "advancedDdl": false, "insert": false, "update": false, "delete": false }
-}
+# 兼容旧版的兜底连接，仅在界面上没有激活任何连接时生效
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=secret
+MYSQL_DATABASE=app
+MYSQL_ENV=prod             # test | prod，默认 prod
 ```
 
-### 贡献
+### 安全性
 
-欢迎贡献代码！请随时提交 Pull Request。
+- 数据库密码与 SSH 口令使用 AES-256-GCM 加密，密钥文件权限 `0600`
+- 关闭了 `multipleStatements`，一个 `query` 参数里塞不进第二条语句
+- 查询结果按 `max_rows`（默认 500 行）截断
+- 权限开关是**护栏，不是安全边界**。真正的边界是按环境区分的最小权限 MySQL 账号——请务必这样用
+
+### 开发
+
+```bash
+npm install
+npm run build     # tsc → build/
+node build/index.js
+```
+
+源码结构：`src/index.ts`（MCP 服务、Web API、SSH 隧道）与 `src/web-ui.ts`（控制台页面，以单个 HTML 字符串形式输出）。
 
 ### 许可证
 
-MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
+MIT
