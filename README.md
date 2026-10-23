@@ -116,6 +116,7 @@ On first launch, add a connection, tag it as test or prod, and click **Use** bef
 **Tabs:**
 - **Connections** — add/edit/delete connections, test connectivity, one-click switch, env tag per connection, optional SSH tunnel, filter list by 全部 / 测试库 / 正式库
 - **Permissions** — five switches (Basic DDL / Advanced DDL / INSERT / UPDATE / DELETE) per env tag (`test`, `prod`)
+- **Tools & Policy** — the exposed MCP tools with their parameters, the effective policy of the active connection, and the statement-classification rules
 
 **Disable auto-open browser:**
 ```bash
@@ -287,6 +288,7 @@ Web 界面随 MCP 服务器自动启动，访问 `http://localhost:3456`。
 **两个标签页：**
 - **连接管理** — 新增/编辑/删除连接、测试连通性、一键切换、设置库环境标识、可选 SSH 隧道，列表可按 全部 / 测试库 / 正式库 筛选
 - **权限配置** — 按标识（测试库 / 正式库）分别控制基础 DDL / 高级 DDL / INSERT / UPDATE / DELETE 五个开关
+- **工具与策略** — 对外暴露的 MCP 工具及参数、当前连接的生效策略、语句归类与兜底规则
 
 **禁用自动打开浏览器：**
 ```bash

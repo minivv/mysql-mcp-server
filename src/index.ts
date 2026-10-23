@@ -671,7 +671,7 @@ class MySqlServer {
     });
   }
 
-  private getToolDefinitions() {
+  getToolDefinitions() {
     return [
       {
         name: 'run_sql_query',
@@ -1138,6 +1138,17 @@ function startWebServer(mcpServer: MySqlServer) {
   });
 
   // 权限模板：按环境标识（test / prod）配置
+  app.get('/api/tools', (_req, res) => {
+    res.json({
+      tools: mcpServer.getToolDefinitions(),
+      policy: {
+        readOnlyKeywords: Array.from(READ_ONLY_KEYWORDS),
+        defaultMaxRows: DEFAULT_MAX_ROWS,
+        operations: OPERATION_LABEL,
+      },
+    });
+  });
+
   app.get('/api/permissions', (_req, res) => {
     res.json(loadPermissions());
   });

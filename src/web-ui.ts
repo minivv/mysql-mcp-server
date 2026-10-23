@@ -249,6 +249,34 @@ body {
 .perm-text strong { font-size: 13px; font-weight: 600; }
 .perm-text small { font-size: 11px; color: var(--text-muted); }
 
+.tool-list { display: flex; flex-direction: column; }
+.tool-item { padding: 14px 0; border-top: 1px solid var(--border); }
+.tool-item:first-child { border-top: 0; padding-top: 2px; }
+.tool-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px; font-weight: 600; color: var(--accent);
+}
+.tool-args { display: flex; gap: 6px; flex-wrap: wrap; }
+.arg {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  padding: 2px 7px; border-radius: 6px; background: var(--surface-3);
+  color: var(--text-muted); cursor: help;
+}
+.arg.req { background: var(--accent-soft); color: var(--accent); }
+.tool-desc { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+
+.policy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.policy-card { margin-bottom: 0; }
+.rule-row { display: flex; gap: 12px; padding: 9px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.rule-row:first-child { border-top: 0; padding-top: 2px; }
+.rule-key { flex: 0 0 74px; color: var(--text-muted); }
+.rule-val { flex: 1; min-width: 0; }
+.chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font-size: 11px; padding: 2px 8px; border-radius: 100px; background: var(--surface-3); color: var(--text-muted); }
+.chip.on { background: var(--test-soft); color: var(--test); }
+.chip.off { background: var(--prod-soft); color: var(--prod); }
+
 .switch { position: relative; width: 38px; height: 21px; flex-shrink: 0; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider {
@@ -280,6 +308,7 @@ body {
   .conn-grid .card:last-child { max-height: none; }
   .conn-list { overflow-y: visible; }
   .perm-grid { grid-template-columns: 1fr; }
+  .policy-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -293,6 +322,7 @@ body {
   <nav class="tabs">
     <button class="tab active" data-tab="connections">连接管理</button>
     <button class="tab" data-tab="permissions">权限配置</button>
+    <button class="tab" data-tab="tools">工具与策略</button>
   </nav>
 
   <section id="panel-connections" class="tab-panel active">
@@ -403,6 +433,26 @@ body {
       <button id="btn-save-perms" class="btn btn-primary">保存权限</button>
     </div>
   </section>
+
+  <section id="panel-tools" class="tab-panel">
+    <div class="card">
+      <div class="card-head">
+        <h2>提供的工具</h2>
+        <span class="muted" id="tool-count"></span>
+      </div>
+      <div id="tool-list" class="tool-list"></div>
+    </div>
+    <div class="policy-grid">
+      <div class="card policy-card">
+        <div class="card-head"><h2>当前连接策略</h2></div>
+        <div id="policy-active"></div>
+      </div>
+      <div class="card policy-card">
+        <div class="card-head"><h2>语句归类与兜底</h2></div>
+        <div id="policy-rules"></div>
+      </div>
+    </div>
+  </section>
 </div>
 <div id="toast" class="toast"></div>
 
@@ -417,7 +467,7 @@ body {
 </div>
 
 <script>
-var state = { connections: [], activeConnection: null, permissions: { test: {}, prod: {} }, editing: null, filter: 'all' };
+var state = { connections: [], activeConnection: null, permissions: { test: {}, prod: {} }, tools: [], policy: {}, editing: null, filter: 'all' };
 var OPS = [
   { key: 'basicDdl', label: '基础 DDL', desc: '建表 / 加字段 / 加索引 / 重命名' },
   { key: 'advancedDdl', label: '高级 DDL', desc: '删表 / 清空 / 删字段' },
@@ -451,10 +501,12 @@ function api(path, options) {
 }
 
 function load() {
-  return Promise.all([api('/api/connections'), api('/api/permissions')]).then(function (out) {
+  return Promise.all([api('/api/connections'), api('/api/permissions'), api('/api/tools')]).then(function (out) {
     state.connections = out[0].connections || [];
     state.activeConnection = out[0].activeConnection;
     state.permissions = out[1] || { test: {}, prod: {} };
+    state.tools = (out[2] && out[2].tools) || [];
+    state.policy = (out[2] && out[2].policy) || {};
     render();
   });
 }
@@ -463,6 +515,7 @@ function render() {
   renderStatus();
   renderConnections();
   renderPermissions();
+  renderTools();
 }
 
 function renderStatus() {
@@ -540,6 +593,79 @@ function renderPermissions() {
       '</div>' + rows +
     '</div>';
   }).join('');
+}
+
+function ruleRow(key, value) {
+  return '<div class="rule-row"><span class="rule-key">' + key + '</span><span class="rule-val">' + value + '</span></div>';
+}
+
+function chipList(items, cls) {
+  if (!items || !items.length) return '<span class="muted">无</span>';
+  return '<span class="chip-row">' + items.map(function (item) {
+    return '<span class="chip ' + (cls || '') + '">' + esc(item) + '</span>';
+  }).join('') + '</span>';
+}
+
+function renderTools() {
+  var tools = state.tools || [];
+  $('tool-count').textContent = tools.length ? tools.length + ' 个' : '';
+  if (!tools.length) {
+    $('tool-list').innerHTML = '<div class="empty">未获取到工具列表。</div>';
+  } else {
+    $('tool-list').innerHTML = tools.map(function (tool) {
+      var schema = tool.inputSchema || {};
+      var props = schema.properties || {};
+      var required = schema.required || [];
+      var args = Object.keys(props).map(function (key) {
+        var isRequired = required.indexOf(key) >= 0;
+        var hint = (props[key] && props[key].description) || key;
+        return '<span class="arg' + (isRequired ? ' req' : '') + '" title="' + esc(hint) + '">' +
+          esc(key) + (isRequired ? '' : '?') + '</span>';
+      }).join('');
+      return '<div class="tool-item">' +
+        '<div class="tool-head">' +
+          '<span class="tool-name">' + esc(tool.name) + '</span>' +
+          '<span class="tool-args">' + args + '</span>' +
+        '</div>' +
+        '<div class="tool-desc">' + esc(tool.description) + '</div>' +
+      '</div>';
+    }).join('');
+  }
+  renderPolicy();
+}
+
+function renderPolicy() {
+  var active = findConnection(state.activeConnection);
+  var box = $('policy-active');
+  if (!active) {
+    box.innerHTML = '<div class="empty">当前没有启用的连接。</div>';
+  } else {
+    var tpl = state.permissions[active.env] || {};
+    var allowed = [];
+    var blocked = [];
+    OPS.forEach(function (op) {
+      if (tpl[op.key]) allowed.push(op.label); else blocked.push(op.label);
+    });
+    box.innerHTML =
+      ruleRow('连接', esc(active.name)) +
+      ruleRow('标识', '<span class="badge ' + active.env + '">' +
+        (active.env === 'test' ? '测试库' : '正式库') + '</span> <span class="muted">env=' + active.env + '</span>') +
+      ruleRow('模式', allowed.length ? '可写' : '只读') +
+      ruleRow('可写操作', chipList(allowed, 'on')) +
+      ruleRow('已拦截', chipList(blocked, 'off')) +
+      ruleRow('访问路径', active.ssh
+        ? esc(active.host) + ':' + esc(active.port) + ' 经 SSH ' + esc(active.ssh.host)
+        : '直连 ' + esc(active.host) + ':' + esc(active.port));
+  }
+
+  var policy = state.policy || {};
+  $('policy-rules').innerHTML =
+    ruleRow('只读', chipList(policy.readOnlyKeywords || [], '')) +
+    ruleRow('基础 DDL', 'CREATE / RENAME / 不含 DROP 的 ALTER') +
+    ruleRow('高级 DDL', 'DROP / TRUNCATE / ALTER … DROP') +
+    ruleRow('兜底', '无法识别的语句一律按高级 DDL 处理') +
+    ruleRow('行数上限', '默认 ' + (policy.defaultMaxRows || 500) + ' 行') +
+    ruleRow('防护', '多语句关闭 · 密码 AES-256-GCM · 权限是护栏而非安全边界');
 }
 
 function findConnection(name) {
@@ -733,6 +859,7 @@ function switchTab(tab) {
   }
   $('panel-connections').classList.toggle('active', tab === 'connections');
   $('panel-permissions').classList.toggle('active', tab === 'permissions');
+  $('panel-tools').classList.toggle('active', tab === 'tools');
   if (window.history && window.history.replaceState) {
     window.history.replaceState(null, '', '#' + tab);
   }
@@ -772,8 +899,9 @@ $('conn-list').addEventListener('click', handleConnAction);
 fillForm(null);
 load();
 
-if (window.location.hash === '#permissions') {
-  switchTab('permissions');
+var initialTab = (window.location.hash || '').replace('#', '');
+if (initialTab === 'permissions' || initialTab === 'tools') {
+  switchTab(initialTab);
 }
 </script>
 </body>
