@@ -237,6 +237,14 @@ interface StatementKind {
   keyword: string;
 }
 
+// 附在每次工具返回里的库环境摘要
+interface EnvSummary {
+  env: DbEnv;
+  envLabel: string;
+  readOnly: boolean;
+  allowedWrites: Operation[];
+}
+
 // 语句归类：只读 / DDL / INSERT / UPDATE / DELETE
 function classifyStatement(query: string): StatementKind {
   const stripped = stripLeadingComments(query);
@@ -409,7 +417,7 @@ class MySqlServer {
     return [
       {
         name: 'run_sql_query',
-        description: '执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH），不受库环境权限限制',
+        description: '执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH），任何环境都允许。返回含 env（test=测试库 / prod=正式库）、readOnly、allowedWrites',
         inputSchema: {
           type: 'object',
           properties: {
@@ -424,7 +432,7 @@ class MySqlServer {
       },
       {
         name: 'execute_sql',
-        description: '执行写操作 SQL（INSERT / UPDATE / DELETE / DDL）。是否允许取决于当前连接所属库环境标识（测试库 / 正式库）的权限模板',
+        description: '执行写操作 SQL（INSERT / UPDATE / DELETE / DDL）。是否放行取决于当前连接的库环境标识及权限模板，被拦截时会说明原因。返回含 env / readOnly / 执行结果',
         inputSchema: {
           type: 'object',
           properties: {
@@ -435,7 +443,7 @@ class MySqlServer {
       },
       {
         name: 'inspect',
-        description: '查看库结构：不带参数返回库列表 + 当前库的表；传 database 返回该库的表；传 table（可配合 database）返回表结构',
+        description: '查看库结构：不带参数返回库列表 + 当前库的表；传 database 返回该库的表；传 table（可配合 database）返回表结构。返回含 env / envLabel / readOnly / allowedWrites，可先用它确认当前库环境再决定能否写入',
         inputSchema: {
           type: 'object',
           properties: {
@@ -446,7 +454,7 @@ class MySqlServer {
       },
       {
         name: 'switch_database',
-        description: '切换当前使用的数据库',
+        description: '切换当前使用的数据库（只换库，不会改变连接的测试库/正式库标识）',
         inputSchema: {
           type: 'object',
           properties: {
@@ -520,6 +528,19 @@ class MySqlServer {
     }
   }
 
+  // 每个工具返回都带上库环境信息，让调用方知道自己在测试库还是正式库
+  private envSummary(conn: DbConnection = this.requireConnection()): EnvSummary {
+    const env = conn.env;
+    const template = getPermissionTemplate(env);
+    const allowedWrites = (Object.keys(template) as Operation[]).filter(op => template[op]);
+    return {
+      env,
+      envLabel: ENV_LABEL[env],
+      readOnly: allowedWrites.length === 0,
+      allowedWrites,
+    };
+  }
+
   private async handleReadQuery(args: unknown, transactionId: string) {
     if (!isValidSqlQueryArgs(args)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid query arguments');
@@ -542,6 +563,7 @@ class MySqlServer {
     const truncated = list.length > maxRows;
 
     return this.successResponse({
+      ...this.envSummary(),
       rowCount: list.length,
       truncated,
       maxRows,
@@ -561,6 +583,7 @@ class MySqlServer {
     console.error(`[${transactionId}] Executing (${kind.read ? 'read' : kind.op}): ${query}`);
     const [result] = await this.requirePool().query(query);
     return this.successResponse({
+      ...this.envSummary(),
       success: true,
       operation: kind.read ? 'read' : kind.op,
       result,
@@ -581,7 +604,7 @@ class MySqlServer {
       console.error(`[${transactionId}] Inspecting table: ${target}`);
       const [columns] = await pool.query(`DESCRIBE ${target}`);
       return this.successResponse({
-        env: conn.env,
+        ...this.envSummary(conn),
         database: database || currentDatabase,
         table,
         columns,
@@ -593,7 +616,7 @@ class MySqlServer {
       console.error(`[${transactionId}] Inspecting database: ${database}`);
       const [rows] = await pool.query(`SHOW TABLES FROM ${mysql.escapeId(database)}`);
       return this.successResponse({
-        env: conn.env,
+        ...this.envSummary(conn),
         database,
         tables: flattenFirstColumn(rows),
       });
@@ -608,7 +631,7 @@ class MySqlServer {
       tables = flattenFirstColumn(tableRows);
     }
     return this.successResponse({
-      env: conn.env,
+      ...this.envSummary(conn),
       database: currentDatabase,
       databases: flattenFirstColumn(dbRows),
       tables,
@@ -624,6 +647,7 @@ class MySqlServer {
     await this.requirePool().query(`USE ${mysql.escapeId(database)}`);
     this.currentDatabase = database;
     return this.successResponse({
+      ...this.envSummary(),
       success: true,
       message: `Switched to database: ${database}`,
       currentDatabase: database,

@@ -102,6 +102,12 @@ MCP_WEB_UI=false               # Disable the Web UI server entirely
 
 Connection management (add / edit / delete / activate / permission templates) lives in the Web UI, not in MCP tools — that keeps the tool surface small and keeps passwords out of the conversation.
 
+Every tool response carries the environment block, so the assistant knows where it is **before** attempting a write:
+
+```json
+{ "env": "prod", "envLabel": "正式库", "readOnly": true, "allowedWrites": [] }
+```
+
 ### Web UI
 
 The Web UI starts automatically with the MCP server at `http://localhost:3456`.
@@ -249,6 +255,12 @@ MCP_WEB_UI=false               # 完全关闭 Web 服务
 | `switch_database` | 切换当前数据库。 |
 
 连接管理（新增/编辑/删除/启用/权限模板）全部在 Web 界面完成，不占用 MCP 工具位，也避免密码穿进对话。
+
+每个工具的返回都带库环境信息，AI 在尝试写操作**之前**就知道自己在哪：
+
+```json
+{ "env": "prod", "envLabel": "正式库", "readOnly": true, "allowedWrites": [] }
+```
 
 ### Web 管理界面
 
