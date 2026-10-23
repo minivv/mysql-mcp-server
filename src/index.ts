@@ -800,8 +800,10 @@ class MySqlServer {
   }
 
   async run() {
-    // Start web server with reference to this instance
-    startWebServer(this);
+    if (process.env.MCP_WEB_UI !== 'false') {
+      // Start web server with reference to this instance
+      startWebServer(this);
+    }
 
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
