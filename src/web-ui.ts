@@ -467,7 +467,6 @@ function fillForm(conn) {
   $('f-password').value = '';
   $('f-database').value = conn ? (conn.database || '') : '';
   setEnvRadio(conn ? conn.env : 'prod');
-  $('f-name').readOnly = !!conn;
   state.editing = conn ? conn.name : null;
   $('form-title').textContent = conn ? '编辑连接：' + conn.name : '添加连接';
   $('btn-cancel').classList.toggle('hidden', !conn);
@@ -478,6 +477,7 @@ function readForm() {
   var checked = document.querySelector('input[name=env]:checked');
   return {
     name: $('f-name').value.trim(),
+    originalName: state.editing || '',
     host: $('f-host').value.trim(),
     port: $('f-port').value ? Number($('f-port').value) : 3306,
     user: $('f-user').value.trim(),
@@ -496,9 +496,8 @@ function saveConnection(event) {
   }
   api('/api/connections', { method: 'POST', body: JSON.stringify(payload) }).then(function (res) {
     if (res && res.success) {
-      toast('已保存：' + payload.name, true);
-      fillForm(null);
-      load();
+      toast(res.renamed ? '已重命名为：' + res.name : '已保存：' + res.name, true);
+      load().then(function () { fillForm(findConnection(res.name) || null); });
     } else {
       toast((res && res.error) || '保存失败', false);
     }
@@ -507,7 +506,6 @@ function saveConnection(event) {
 
 function testConnection() {
   var payload = readForm();
-  payload.name = payload.name || state.editing;
   toast('正在测试连接…', true);
   api('/api/connections/test', { method: 'POST', body: JSON.stringify(payload) }).then(function (res) {
     toast(res.message || (res.success ? '连接成功' : '连接失败'), !!res.success);
@@ -523,7 +521,6 @@ function handleConnAction(event) {
 
   if (act === 'edit') {
     if (conn) fillForm(conn);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
     return;
   }
   if (act === 'activate') {
@@ -537,7 +534,7 @@ function handleConnAction(event) {
     if (!conn) return;
     api('/api/connections/test', {
       method: 'POST',
-      body: JSON.stringify({ ...conn, password: '' })
+      body: JSON.stringify({ ...conn, originalName: conn.name, password: '' })
     }).then(function (res) {
       toast(res.message || (res.success ? '连接成功' : '连接失败'), !!res.success);
     });

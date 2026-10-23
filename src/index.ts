@@ -681,13 +681,18 @@ function startWebServer(mcpServer: MySqlServer) {
   });
 
   app.post('/api/connections', (req, res) => {
-    const { name, host, port, user, password, database, env } = req.body || {};
+    const { name, originalName, host, port, user, password, database, env } = req.body || {};
     if (!name || !host || !user) {
       return res.status(400).json({ error: 'name、host、user 为必填项' });
     }
     const config = loadConfig();
-    const idx = config.connections.findIndex(c => c.name === name);
+    // 编辑时前端会带原名称，改名后仍能定位到同一条连接
+    const lookup = originalName || name;
+    const idx = config.connections.findIndex(c => c.name === lookup);
     const existing = idx >= 0 ? config.connections[idx] : null;
+    if (name !== lookup && config.connections.some(c => c.name === name)) {
+      return res.status(400).json({ error: `连接名称「${name}」已存在` });
+    }
     const conn: DbConnection = {
       name,
       host,
@@ -700,8 +705,12 @@ function startWebServer(mcpServer: MySqlServer) {
     };
     if (idx >= 0) config.connections[idx] = conn;
     else config.connections.push(conn);
+    // 改名时同步活动连接标记，避免指向已重命名的连接
+    if (config.activeConnection === lookup && lookup !== name) {
+      config.activeConnection = name;
+    }
     saveConfig(config);
-    res.json({ success: true, env: conn.env });
+    res.json({ success: true, env: conn.env, name: conn.name, renamed: lookup !== name });
   });
 
   app.delete('/api/connections/:name', async (req, res) => {
@@ -732,11 +741,11 @@ function startWebServer(mcpServer: MySqlServer) {
   });
 
   app.post('/api/connections/test', async (req, res) => {
-    const { host, port, user, password, database, name } = req.body || {};
+    const { host, port, user, password, database, name, originalName } = req.body || {};
     let resolvedPassword = password;
     // 编辑已有连接时前端不回显密码，此时用已保存的密码测试
-    if ((!resolvedPassword || resolvedPassword === '') && name) {
-      const saved = loadConfig().connections.find(c => c.name === name);
+    if ((!resolvedPassword || resolvedPassword === '') && (originalName || name)) {
+      const saved = loadConfig().connections.find(c => c.name === (originalName || name));
       resolvedPassword = saved?.password;
     }
     try {
